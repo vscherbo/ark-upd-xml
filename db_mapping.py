@@ -1,156 +1,146 @@
 #!/usr/bin/env python
 """
-db_mapping.py - Модели данных и мапперы.
-
+db_mapping.py - Модели данных для генерации УПД.
+Использует Pydantic для валидации и сериализации.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import date
-from typing import Literal  # , Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
+class AddressRF(BaseModel):
+    """Адрес в формате АдрРФ (для РФ)."""
+    postal_code: Optional[str] = Field(None, description="Почтовый индекс")
+    region_code: str = Field(..., description="Код субъекта РФ (2 цифры)")
+    region_name: str = Field(..., description="Наименование субъекта РФ")
+    district: Optional[str] = Field(None, description="Район")
+    city: Optional[str] = Field(None, description="Город")
+    locality: Optional[str] = Field(None, description="Населенный пункт")
+    street: Optional[str] = Field(None, description="Улица")
+    house: Optional[str] = Field(None, description="Дом")
+    building: Optional[str] = Field(None, description="Корпус")
+    apartment: Optional[str] = Field(None, description="Квартира/помещение")
+    extra_info: Optional[str] = Field(None, description="Иные сведения об адресе")
+
+
 class Seller(BaseModel):
-    """Реквизиты продавца"""
-    name: str = ""          # «ООО Ромашка»
-    inn: str = ""
-    kpp: str = ""
-    ogrn: str = ""
-    trade_mark: str = ""         # бренд, информативно
-    # Адрес
-    address: str = ""
-    region_code: str = ""        # «77»
-    region_name: str = ""        # «г. Москва»
-    postal_code: str = ""        # «101000»
-    city: str = ""               # «Москва»
-    street: str = ""             # «ул. Такая-то»
-    house: str = ""              # «1»
-    apartment: str = ""          # «10»
-    # Прочее
-    locality: str = ""           # «мкр. ..., ...» — опциональное поле для АдрРФ
+    """Продавец."""
+    name: str = Field(..., description="Полное наименование")
+    inn: str = Field(..., description="ИНН")
+    kpp: str = Field(..., description="КПП")
+    ogrn: Optional[str] = Field(None, description="ОГРН")
+    okpo: Optional[str] = Field(None, description="ОКПО")
+    address: AddressRF = Field(..., description="Адрес")
+    # Дополнительные реквизиты, если нужны
+    short_name: Optional[str] = Field(None, description="Сокращенное наименование")
+    opf_code: Optional[str] = Field(None, description="Код ОПФ")
+    opf_full_name: Optional[str] = Field(None, description="Полное наименование ОПФ")
 
 
 class Bank(BaseModel):
-    """Банковские реквизиты продавца."""
-    bank_name: str = ""
-    bik: str = ""
-    corr_account: str = ""
-    account: str = ""            # расчётный счёт
+    """Банковские реквизиты."""
+    bank_name: str = Field(..., description="Наименование банка")
+    bik: str = Field(..., description="БИК")
+    account: str = Field(..., description="Номер расчетного счета")
+    corr_account: Optional[str] = Field(None, description="Корреспондентский счет")
 
 
 class Tax(BaseModel):
-    """Налоговый режим и ставка НДС."""
-    regime: Literal["ОСНО", "УСН доходы", "УСН доходы минус расходы", "НПД"] = "ОСНО"
-    vat_rate: Literal["без НДС", "0%", "5%", "7%", "10%", "20%", "22%"] = "22%"
+    """Налоговые параметры."""
+    vat_rate: str = Field(..., description="Ставка НДС (например, '20%', '10/110', 'без НДС')")
 
 
 class Signer(BaseModel):
     """Подписант УПД."""
-    last_name: str = ""
-    first_name: str = ""
-    middle_name: str = ""
-    position: str = "Индивидуальный предприниматель"
-    # Способ подтверждения полномочий (код из справочника ФНС):
-    # 1 — лицо, действующее без доверенности
-    # 6 — МЧД
-    auth_method: Literal["1", "6"] = "1"
-    mchd_number: str = ""        # если auth_method=6
-    mchd_date: str = ""          # ДД.ММ.ГГГГ
-    mchd_issuer_inn: str = ""
+    last_name: str = Field(..., description="Фамилия")
+    first_name: str = Field(..., description="Имя")
+    middle_name: Optional[str] = Field(None, description="Отчество")
+    position: Optional[str] = Field(None, description="Должность")
+    # Способ подтверждения полномочий:
+    # 1 — без доверенности, 2 — по доверенности (бумажной), 3 — МЧД и т.д.
+    auth_method: Literal["1", "2", "3", "4", "5", "6"] = Field(
+        "1",
+        description="Способ подтверждения полномочий (код)"
+    )
+    # Для доверенности (если auth_method в {3,5}):
+    mchd_number: Optional[str] = Field(None, description="Номер доверенности (МЧД)")
+    mchd_date: Optional[date] = Field(None, description="Дата выдачи доверенности")
+    mchd_issuer_inn: Optional[str] = Field(None, description="ИНН доверителя")
+    # Для бумажной доверенности:
+    paper_doc_number: Optional[str] = Field(None, description="Внутренний номер доверенности")
+    paper_doc_date: Optional[date] = Field(None, description="Дата выдачи бумажной доверенности")
 
 
 class Buyer(BaseModel):
-    """Грузополучатель и покупатель."""
-    name: str = ""
-    inn: str = ""
-    kpp: str = ""
-    address: str = ""
-    region_code: str = ""
-    region_name: str = ""
-    postal_code: str = ""
-    city: str = ""
-    locality: str = ""
-    street: str = ""
-    house: str = ""
-    building: str = ""
+    """Покупатель (и грузополучатель, если совпадает)."""
+    name: str = Field(..., description="Полное наименование")
+    inn: str = Field(..., description="ИНН")
+    kpp: str = Field(..., description="КПП")
+    address: AddressRF = Field(..., description="Адрес")
 
 
-class Settings(BaseModel):
-    seller: Seller = Field(default_factory=Seller)
-    bank: Bank = Field(default_factory=Bank)
-    tax: Tax = Field(default_factory=Tax)
-    signer: Signer = Field(default_factory=Signer)
-    buyer: Buyer = Field(default_factory=Buyer)
+class BillItem(BaseModel):
+    """Позиция товара (строка таблицы)."""
+    row_num: int = Field(..., description="Номер строки")
+    name: str = Field(..., description="Наименование товара/работы/услуги")
+    oktei_code: str = Field(..., description="Код ОКЕИ")
+    oktei_name: str = Field(..., description="Наименование единицы измерения")
+    quantity: float = Field(..., description="Количество")
+    price_without_vat: float = Field(..., description="Цена за единицу без НДС")
+    total_without_vat: float = Field(..., description="Стоимость без НДС")
+    vat_rate: str = Field(..., description="Ставка НДС")
+    vat_amount: float = Field(..., description="Сумма НДС")
+    total_with_vat: float = Field(..., description="Стоимость с НДС")
+    # Дополнительные поля (необязательные)
+    article: Optional[str] = Field(None, description="Артикул")
+    kiz_list: List[str] = Field(default_factory=list, description="КИЗ (список)")
+    # Для прослеживаемости и др. можно добавить, но для примера достаточно.
 
 
-
-@dataclass
-class BillItem:
-    """Позиция счёта."""
-    row_num: int
-    article: str
-    name: str
-    quantity: float
-    sum_with_vat: float
-    vat_rate_src: str
-    vat_amount_src: float
-    kiz: str
-
-
-@dataclass
-class Bill:
-    """Счёт (документ-основание для УПД)."""
-    number: str
-    date: date
-    seller_id: int
-    buyer_id: int
-    items: List[BillItem]
-
-
-def build_settings(seller_data: dict, buyer_data: dict) -> Settings:
-    """
-    Создаёт объект Settings из данных продавца и покупателя.
-
-    Args:
-        seller_data: Словарь с полями из таблицы sellers.
-        buyer_data: Словарь с полями из таблицы buyers.
-
-    Returns:
-        Settings: объект с реквизитами для генератора УПД.
-    """
-    seller = Seller(
-        inn=seller_data["inn"],
-        kpp=seller_data["kpp"],
-        # name='ООО "КИП СПБ"',  # seller_data["name"].replace("'", ""),
-        name=seller_data["name"],
-        address=seller_data.get("address", ""),
-        okpo=seller_data.get("okpo", ""),
-        ogrn=seller_data.get("ogrn", ""),
+class BillData(BaseModel):
+    """Полный набор данных для генерации УПД."""
+    bill_number: str = Field(..., description="Номер счета-фактуры (основания)")
+    bill_date: date = Field(..., description="Дата счета")
+    upd_number: str = Field(..., description="Номер УПД (присваивается при генерации)")
+    upd_date: date = Field(..., description="Дата УПД (обычно текущая)")
+    upd_file: str = Field(..., description="Имя файла УПД по правилам")
+    function: Literal["СЧФ", "СЧФДОП", "ДОП", "СвРК", "СвЗК"] = Field(
+        "СЧФДОП",
+        description="Функция документа"
     )
-    print('models, build_settings seller_data:', seller_data)
-    bank = Bank(
-        name=seller_data.get("bank_name", ""),
-        bic=seller_data.get("bic", ""),
-        account=seller_data.get("account", ""),
-        corr_account=seller_data.get("corr_account", ""),
+    fact_housing_name: Optional[str] = Field(
+        None,
+        description="Наименование документа по факту хозяйственной жизни"
     )
-    tax = Tax(
-        vat_rate=seller_data["vat_rate"],
-        tax_system=seller_data.get("tax_system", ""),
+    doc_name_operator: Optional[str] = Field(
+        None,
+        description="Наименование первичного документа, определенное организацией"
     )
-    signer = Signer(
-        position=seller_data.get("signer_position", ""),
-        fio=seller_data["signer_fio"],
-        basis=seller_data.get("signer_basis", ""),
-        basis_details=seller_data.get("signer_basis_details", ""),
-    )
-    buyer = Buyer(
-        inn=buyer_data["inn"],
-        kpp=buyer_data.get("kpp", ""),
-        name=buyer_data["name"],
-        address=buyer_data.get("address", ""),
-    )
-    return Settings(seller=seller, bank=bank, tax=tax, signer=signer, buyer=buyer)
+    seller: Seller
+    buyer: Buyer
+    bank: Optional[Bank] = None
+    tax: Tax
+    signer: Signer
+    items: List[BillItem] = Field(default_factory=list)
+    # Основание (документ-основание для отгрузки)
+    basis_doc_name: Optional[str] = Field(None, description="Наименование документа-основания")
+    basis_doc_number: Optional[str] = Field(None, description="Номер документа-основания")
+    basis_doc_date: Optional[date] = Field(None, description="Дата документа-основания")
+    # Сведения о передаче (СвПер)
+    operation_content: str = Field("Товары переданы", description="Содержание операции")
+    operation_type: Optional[str] = Field("продажа", description="Вид операции")
+    transfer_date: Optional[date] = None
+    transfer_start_date: Optional[date] = None
+    transfer_end_date: Optional[date] = None
+    # Транспортировка
+    transport_info: Optional[str] = Field(None, description="Сведения о транспортировке")
+    incoterms: Optional[str] = Field(None, description="Инкотермс (3 буквы)")
+    incoterms_version: Optional[str] = Field(None, description="Версия Инкотермс (4 цифры)")
+    # Дополнительные информационные поля (ИнфПолФХЖ1,2,3) – можно добавить при необходимости
+
+    class Config:
+        use_enum_values = True
