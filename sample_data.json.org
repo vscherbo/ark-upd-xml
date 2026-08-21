@@ -1,0 +1,94 @@
+{
+  "bill_number": "1",
+  "bill_date": "2026-08-14",
+  "upd_number": "upd123",
+  "upd_date": "2026-08-20",
+  "function": "СЧФДОП",
+  "fact_housing_name": "Документ об отгрузке товаров (выполнении работ), передаче имущественных прав (документ об оказании услуг)",
+  "doc_name_operator": "Счет-фактура и документ об отгрузке товаров (выполнении работ), передаче имущественных прав (документ об оказании услуг)",
+  "seller": {
+    "name": "ООО \"Автоматика\"",
+    "inn": "7804431521",
+    "kpp": "780401001",
+    "ogrn": null,
+    "okpo": null,
+    "address": {
+      "postal_code": "194064",
+      "region_code": "78",
+      "region_name": "г. Санкт-Петербург",
+      "street": "Политехническая",
+      "house": "29",
+      "building": "2",
+      "apartment": "53"
+    }
+  },
+  "buyer": {
+    "name": "ООО \"КИП СПБ\"",
+    "inn": "7805781663",
+    "kpp": "780501001",
+    "address": {
+      "postal_code": "198095",
+      "region_code": "78",
+      "region_name": "г. Санкт-Петербург",
+      "street": "Промышленная",
+      "house": "19",
+      "building": "Н",
+      "apartment": "помещ. 1-Н №331"
+    }
+  },
+  "bank": {
+    "bank_name": "Банк",
+    "bik": "044030001",
+    "account": "40702810000000000000",
+    "corr_account": "30101810100000000000"
+  },
+  "tax": {
+    "vat_rate": "22%"
+  },
+  "signer": {
+    "last_name": "Бондаренко",
+    "first_name": "Владислав",
+    "middle_name": "Владимирович",
+    "position": "генеральный директор",
+    "auth_method": "1"
+  },
+  "items": [
+    {
+      "row_num": 1,
+      "name": "Реле времени  ARK5-S-A230 (10 диапазонов 0,1с…100д, ~230В, вых. Рх16А, 250В); настенный, на DIN рейку, 1S; аналоговая установка времени, светодиодн.индикаторы; 2 временные функции, 61г",
+      "oktei_code": "796",
+      "oktei_name": "шт",
+      "quantity": 2,
+      "price_without_vat": 2451.64,
+      "total_without_vat": 4903.28,
+      "vat_rate": "22%",
+      "vat_amount": 1078.72,
+      "total_with_vat": 5982.00,
+      "kiz_list": ["0104609664786013215V<lA70.53)lV16xl0X4", "0104609664786013215n1+ap6&R?v4lUl)g6B,"]
+    },
+    {
+      "row_num": 2,
+      "name": "Реле времени  ARK5-D-W240 (4 диапазона 0,1с…10мин, ?12…240В, вых. Рх16А, 250В); настенный, на DIN рейку,1S; таймер реле работает без питания; аналоговая установка времени, светодиодн.индикаторы, 66г",
+      "oktei_code": "796",
+      "oktei_name": "шт",
+      "quantity": 3,
+      "price_without_vat": 3871.31,
+      "total_without_vat": 11613.93,
+      "vat_rate": "22%",
+      "vat_amount": 2555.07,
+      "total_with_vat": 14169.00,
+      "kiz_list": ["0104609664786020215BHKre5Qp<JWL&XAUoJJ", "0104609664786020215ISGTLcNz.=3hWf\"_UHO", "0104609664786020215XUEd1XOG-QL;as<UfqO"]
+    }
+  ],
+  "basis_doc_name": "Договор продажи",
+  "basis_doc_number": "КИП4828",
+  "basis_doc_date": "2026-08-10",
+  "operation_content": "Товары переданы",
+  "operation_type": "продажа",
+  "transfer_date": "2026-08-14",
+  "transfer_start_date": "2026-08-14",
+  "transfer_end_date": "2026-08-14",
+  "transport_info": "самовывоз",
+  "incoterms": "EXW",
+  "incoterms_version": "2020"
+}
