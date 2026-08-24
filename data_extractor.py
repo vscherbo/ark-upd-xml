@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-data_extractor.py - Извлечение данных из PostgreSQL или JSON.
+data_extractor.py - Извлечение данных для УПД из PostgreSQL или JSON.
 Использует LoggingConnection для логирования запросов.
 Поддерживает .pgpass для аутентификации.
 """
@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import psycopg2
 import psycopg2.extras
+import psycopg2.pool
 from psycopg2 import sql
 from psycopg2.extras import LoggingConnection, LoggingCursor
 
@@ -56,19 +57,16 @@ class PGManager:
 
     def _get_pool(self):
         if self._pool is None:
-            # Используем LoggingConnection как фабрику
-            conn_factory = LoggingConnection if self.log_queries else None
-            self._pool = psycopg2.pool.SimpleConnectionPool(
-                self.min_conn,
-                self.max_conn,
-                self.dsn,
-                connection_factory=conn_factory,
-                cursor_factory=psycopg2.extras.RealDictCursor,
-            )
+            pool_kwargs = {
+                "minconn": self.min_conn,
+                "maxconn": self.max_conn,
+                "dsn": self.dsn,
+                "cursor_factory": psycopg2.extras.RealDictCursor,
+            }
             if self.log_queries:
-                # Назначаем логгер для LoggingConnection
-                for conn in self._pool._getconns():
-                    conn.initialize(logger)
+                pool_kwargs["connection_factory"] = LoggingConnection
+            self._pool = psycopg2.pool.SimpleConnectionPool(**pool_kwargs)
+            # Не инициализируем соединения здесь – они будут создаваться по мере необходимости
         return self._pool
 
     @contextmanager
@@ -76,6 +74,9 @@ class PGManager:
         pool = self._get_pool()
         conn = pool.getconn()
         try:
+            # Инициализируем логгер, если используется LoggingConnection
+            if self.log_queries and isinstance(conn, LoggingConnection):
+                conn.initialize(logger)
             yield conn
         finally:
             pool.putconn(conn)
@@ -314,7 +315,7 @@ class DataExtractor:
             # Вычисляем цену без НДС из цены с НДС и ставки
             # Для простоты возьмём ставку из seller_raw (одинаковая для всех товаров)
             vat_rate_str = seller_raw.get("vat_rate", "22%")
-            # Преобразуем "20%" в 0.2 для вычислений
+            # Преобразуем "22%" в 0.2 для вычислений
             try:
                 vat_rate_num = float(vat_rate_str.replace("%", "")) / 100.0
             except ValueError:
@@ -355,6 +356,7 @@ class DataExtractor:
             bill_date=bill_info["bill_date"],
             upd_number=upd_number,
             upd_date=date.today(),
+            upd_file="",
             function="СЧФДОП",
             fact_housing_name="Документ об отгрузке товаров (выполнении работ), передаче имущественных прав (документ об оказании услуг)",
             doc_name_operator="Счет-фактура и документ об отгрузке товаров (выполнении работ), передаче имущественных прав (документ об оказании услуг)",

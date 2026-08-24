@@ -96,7 +96,7 @@ class BillItem(BaseModel):
     vat_amount: float = Field(..., description="Сумма НДС")
     total_with_vat: float = Field(..., description="Стоимость с НДС")
     # Дополнительные поля (необязательные)
-    article: Optional[str] = Field(None, description="Артикул")
+    article: Optional[int] = Field(None, description="КодСодержания")
     kiz_list: List[str] = Field(default_factory=list, description="КИЗ (список)")
     # Для прослеживаемости и др. можно добавить, но для примера достаточно.
 

@@ -84,6 +84,7 @@ def main():
     has_kiz = any(item.kiz_list for item in bill_data.items)
 
     id_file = FilenameGenerator.generate(seller_id, buyer_id, has_kiz)
+    logger.debug('id_file=%s', id_file)
     bill_data.upd_file = id_file
 
     filename = id_file + ".xml"
