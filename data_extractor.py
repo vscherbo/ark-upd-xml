@@ -24,6 +24,39 @@ from db_mapping import (AddressRF, Bank, BillData, BillItem, Buyer, Seller,
 logger = logging.getLogger(__name__)
 
 
+class LoggingResultCursor(psycopg2.extras.RealDictCursor):
+    """
+    Курсор, логирующий не только запросы, но и результаты выборки.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._logger = logging.getLogger(__name__)
+
+    def execute(self, query, vars=None):
+        self._logger.debug("Executing query: %s, params: %s", query, vars)
+        return super().execute(query, vars)
+
+    def fetchone(self):
+        row = super().fetchone()
+        self._logger.debug("Fetch one: %s", row)
+        return row
+
+    def fetchall(self):
+        rows = super().fetchall()
+        self._logger.debug("Fetch all: %s rows", len(rows))
+        if rows:
+            self._logger.debug("First row sample: %s", rows[0])
+        return rows
+
+    def fetchmany(self, size=None):
+        rows = super().fetchmany(size)
+        self._logger.debug("Fetch many: %s rows", len(rows))
+        if rows:
+            self._logger.debug("First row sample: %s", rows[0])
+        return rows
+
+
 class PGManager:
     """
     Менеджер подключения к PostgreSQL с пулом соединений.
@@ -36,6 +69,7 @@ class PGManager:
         min_conn: int = 1,
         max_conn: int = 10,
         log_queries: bool = True,
+        log_results: bool = True,
     ):
         """
         Args:
@@ -54,14 +88,20 @@ class PGManager:
         self.min_conn = min_conn
         self.max_conn = max_conn
         self.log_queries = log_queries
+        self.log_results = log_results
 
     def _get_pool(self):
         if self._pool is None:
+            # Выбираем фабрику курсора
+            cursor_factory = (
+                LoggingResultCursor if self.log_results
+                else psycopg2.extras.RealDictCursor
+            )
             pool_kwargs = {
                 "minconn": self.min_conn,
                 "maxconn": self.max_conn,
                 "dsn": self.dsn,
-                "cursor_factory": psycopg2.extras.RealDictCursor,
+                "cursor_factory": cursor_factory,
             }
             if self.log_queries:
                 pool_kwargs["connection_factory"] = LoggingConnection
@@ -264,13 +304,16 @@ class DataExtractor:
         # и мы не можем его разбить на составные. Поэтому заполним только текстовое поле.
         # В реальном проекте нужно либо парсить, либо хранить структурированно.
         seller_address = AddressRF(
-            region_code="78",  # пример, нужно извлекать из address_text
+            # region_code="78",
+            region_code=seller_raw["inn"][:2],  # первые два символа из ИНН
             region_name="г. Санкт-Петербург",
-            # В реальности нужно разобрать, но для демонстрации оставим заглушку
+            postal_code=seller_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
+            street=seller_raw["address_text"][16:36],
+            house=seller_raw["address_text"][37:41],
         )
         buyer_address = AddressRF(
-            region_code="78",
-            region_name="г. Санкт-Петербург",
+            region_code=buyer_raw["inn"][:2],  # первые два символа из ИНН
+            region_name="TODO: Регион покупателя",
         )
 
         seller = Seller(
