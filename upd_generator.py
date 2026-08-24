@@ -138,15 +138,15 @@ class UpdGenerator:
         )
 
         # ДопСвФХЖ1 - можно добавить, если есть
-        if data.function in ("СЧФДОП", "ДОП"):
-            dop = etree.SubElement(sv_sch, "ДопСвФХЖ1")
-            # Пример: СпОбстФСЧФДОП="00005" (как в примере)
-            if data.function == "СЧФДОП":
-                dop.set("СпОбстФСЧФДОП", "00005")
+        # if data.function in ("СЧФДОП", "ДОП"):
+        #     dop = etree.SubElement(sv_sch, "ДопСвФХЖ1")
+        #     # Пример: СпОбстФСЧФДОП="00005" (как в примере)
+        #     if data.function == "СЧФДОП":
+        #         dop.set("СпОбстФСЧФДОП", "00005")
 
-        # ИнфПолФХЖ1 - пример
-        inf_pol = etree.SubElement(sv_sch, "ИнфПолФХЖ1")
-        text_inf = etree.SubElement(inf_pol, "ТекстИнф", Идентиф="СвВыбытияМАРК", Значен="3")
+        # # ИнфПолФХЖ1 - пример
+        # inf_pol = etree.SubElement(sv_sch, "ИнфПолФХЖ1")
+        # text_inf = etree.SubElement(inf_pol, "ТекстИнф", Идентиф="СвВыбытияМАРК", Значен="3")
 
         # ТаблСчФакт
         tabl = etree.SubElement(doc, "ТаблСчФакт")
