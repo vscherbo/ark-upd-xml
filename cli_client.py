@@ -24,7 +24,7 @@ def main():
         description="Генерация УПД (Универсальный передаточный документ) версии 5.03"
     )
     parser.add_argument(
-        "--invoice-number",
+        "--bill-number",
         type=int,
         required=True,
         help="Номер счёта (из базы данных)",
@@ -71,7 +71,7 @@ def main():
         json_path=args.json_path,
     )
     try:
-        bill_data = extractor.get_bill_data(args.invoice_number, args.upd_number)
+        bill_data = extractor.get_bill_data(args.bill_number, args.upd_number)
     except Exception as e:
         logger.error("Ошибка извлечения данных: %s", e)
         sys.exit(1)
