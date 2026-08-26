@@ -7,7 +7,7 @@ db_mapping.py - Модели данных для генерации УПД.
 from __future__ import annotations
 
 from datetime import date
-from typing import List, Literal, Optional
+from typing import List, Literal, Optional, Union
 
 from pydantic import BaseModel, Field
 
@@ -26,6 +26,49 @@ class AddressRF(BaseModel):
     apartment: Optional[str] = Field(None, description="Квартира/помещение")
     extra_info: Optional[str] = Field(None, description="Иные сведения об адресе")
 
+# db_mapping.py - добавить после AddressRF
+
+
+class VidNaimKod(BaseModel):
+    """Тип для элементов с видом (кодом) и наименованием (МуниципРайон, ГородСелПоселен)."""
+    vid_kod: str = Field(..., description="Вид (код) элемента")
+    naim: str = Field(..., description="Наименование элемента")
+
+
+class VidNaim(BaseModel):
+    """Тип для элементов с видом и наименованием (НаселенПункт)."""
+    vid: str = Field(..., description="Вид элемента")
+    naim: str = Field(..., description="Наименование элемента")
+
+
+class TipNaim(BaseModel):
+    """Тип для элементов с типом и наименованием (ЭлПланСтруктур, ЭлУлДорСети)."""
+    tip: str = Field(..., description="Тип элемента")
+    naim: str = Field(..., description="Наименование элемента")
+
+
+class NomerTip(BaseModel):
+    """Тип для элементов с типом и номером (Здание, ПомещЗдания, ПомещКвартиры)."""
+    tip: str = Field(..., description="Тип элемента")
+    nomer: str = Field(..., description="Номер элемента")
+
+
+class AddressGAR(BaseModel):
+    """Адрес в формате АдрГАР (государственный адресный реестр)."""
+    id_num: str = Field(..., description="Код ФИАС (ИдНом)")
+    index: Optional[str] = Field(None, description="Почтовый индекс")
+    region_code: str = Field(..., description="Код субъекта РФ (2 цифры)")
+    region_name: str = Field(..., description="Наименование субъекта РФ")
+    municipal_district: Optional[VidNaimKod] = None
+    city_settlement: Optional[VidNaimKod] = None
+    locality: Optional[VidNaim] = None
+    planning_structure: Optional[TipNaim] = None
+    road_network: Optional[TipNaim] = None
+    land_plot: Optional[str] = None
+    building: Optional[NomerTip] = None
+    premises: Optional[NomerTip] = None
+    apartment_premises: Optional[NomerTip] = None
+
 
 class Seller(BaseModel):
     """Продавец."""
@@ -34,7 +77,7 @@ class Seller(BaseModel):
     kpp: str = Field(..., description="КПП")
     ogrn: Optional[str] = Field(None, description="ОГРН")
     okpo: Optional[str] = Field(None, description="ОКПО")
-    address: AddressRF = Field(..., description="Адрес")
+    address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
     # Дополнительные реквизиты, если нужны
     short_name: Optional[str] = Field(None, description="Сокращенное наименование")
     opf_code: Optional[str] = Field(None, description="Код ОПФ")
@@ -80,15 +123,15 @@ class Buyer(BaseModel):
     name: str = Field(..., description="Полное наименование")
     inn: str = Field(..., description="ИНН")
     kpp: str = Field(..., description="КПП")
-    address: AddressRF = Field(..., description="Адрес")
+    address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
 
 
 class BillItem(BaseModel):
     """Позиция товара (строка таблицы)."""
     row_num: int = Field(..., description="Номер строки")
     name: str = Field(..., description="Наименование товара/работы/услуги")
-    oktei_code: str = Field(..., description="Код ОКЕИ")
-    oktei_name: str = Field(..., description="Наименование единицы измерения")
+    okei_code: str = Field(..., description="Код ОКЕИ")
+    okei_name: str = Field(..., description="Наименование единицы измерения")
     quantity: float = Field(..., description="Количество")
     price_without_vat: float = Field(..., description="Цена за единицу без НДС")
     total_without_vat: float = Field(..., description="Стоимость без НДС")

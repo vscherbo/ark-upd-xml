@@ -10,7 +10,8 @@ from typing import Union
 
 from lxml import etree
 
-from db_mapping import BillData
+from db_mapping import (AddressGAR, AddressRF, BillData, NomerTip, TipNaim,
+                        VidNaim, VidNaimKod)
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +36,103 @@ class UpdGenerator:
             schema_root = etree.XML(f.read())
         self.xsd_schema = etree.XMLSchema(schema_root)
         logger.info("XSD-схема успешно загружена из %s", self.xsd_path)
+
+    def _add_address(self, parent, address):
+        """ Формирует адрес заданного типа """
+        if isinstance(address, AddressRF):
+            addr = etree.SubElement(parent, "Адрес")
+            attrs = {
+                "КодРегион": address.region_code,
+                "НаимРегион": address.region_name,
+            }
+            logging.debug('AddressRF, address.postal_code=%s', address.postal_code)
+            if address.postal_code and len(address.postal_code) == 6:
+                attrs["Индекс"] = address.postal_code
+            if address.city:
+                attrs["Город"] = address.city
+            if address.locality:
+                attrs["НаселПункт"] = address.locality
+            if address.street:
+                attrs["Улица"] = address.street
+            if address.house:
+                attrs["Дом"] = address.house
+            if address.building:
+                attrs["Корпус"] = address.building
+            if address.apartment:
+                attrs["Кварт"] = address.apartment
+            if address.extra_info:
+                attrs["ИныеСвед"] = address.extra_info
+            etree.SubElement(addr, "АдрРФ", **attrs)
+        elif isinstance(address, AddressGAR):
+            addr = etree.SubElement(parent, "Адрес")
+            gar_attrs = {"ИдНом": address.id_num}
+            logging.debug('AddressGAR, address.id_num=%s', address.id_num)
+            if address.index and len(address.index) == 6:
+                gar_attrs["Индекс"] = address.index
+            gar = etree.SubElement(addr, "АдрГАР", **gar_attrs)
+            # Обязательные элементы
+            etree.SubElement(gar, "Регион").text = address.region_code
+            etree.SubElement(gar, "НаимРегион").text = address.region_name
+
+            # Необязательные элементы, если заданы
+            if address.municipal_district:
+                etree.SubElement(
+                    gar,
+                    "МуниципРайон",
+                    ВидКод=address.municipal_district.vid_kod,
+                    Наим=address.municipal_district.naim,
+                )
+            if address.city_settlement:
+                etree.SubElement(
+                    gar,
+                    "ГородСелПоселен",
+                    ВидКод=address.city_settlement.vid_kod,
+                    Наим=address.city_settlement.naim,
+                )
+            if address.locality:
+                etree.SubElement(
+                    gar,
+                    "НаселенПункт",
+                    Вид=address.locality.vid,
+                    Наим=address.locality.naim,
+                )
+            if address.planning_structure:
+                etree.SubElement(
+                    gar,
+                    "ЭлПланСтруктур",
+                    Тип=address.planning_structure.tip,
+                    Наим=address.planning_structure.naim,
+                )
+            if address.road_network:
+                etree.SubElement(
+                    gar,
+                    "ЭлУлДорСети",
+                    Тип=address.road_network.tip,
+                    Наим=address.road_network.naim,
+                )
+            if address.land_plot:
+                etree.SubElement(gar, "ЗемелУчасток").text = address.land_plot
+            if address.building:
+                etree.SubElement(
+                    gar,
+                    "Здание",
+                    Тип=address.building.tip,
+                    Номер=address.building.nomer,
+                )
+            if address.premises:
+                etree.SubElement(
+                    gar,
+                    "ПомещЗдания",
+                    Тип=address.premises.tip,
+                    Номер=address.premises.nomer,
+                )
+            if address.apartment_premises:
+                etree.SubElement(
+                    gar,
+                    "ПомещКвартиры",
+                    Тип=address.apartment_premises.tip,
+                    Номер=address.apartment_premises.nomer,
+                )
 
     def generate(self, data: BillData) -> str:
         """
@@ -81,19 +179,21 @@ class UpdGenerator:
             ИННЮЛ=data.seller.inn,
             КПП=data.seller.kpp,
         )
-        # Адрес продавца (АдрРФ)
-        addr = etree.SubElement(sv_prod, "Адрес")
-        addr_rf = etree.SubElement(
-            addr,
-            "АдрРФ",
-            Индекс=data.seller.address.postal_code or "",
-            КодРегион=data.seller.address.region_code,
-            НаимРегион=data.seller.address.region_name,
-            Улица=data.seller.address.street or "",
-            Дом=data.seller.address.house or "",
-            Корпус=data.seller.address.building or "",
-            Кварт=data.seller.address.apartment or "",
-        )
+        # Адрес продавца
+        self._add_address(sv_prod, data.seller.address)
+
+        # addr = etree.SubElement(sv_prod, "Адрес")
+        # addr_rf = etree.SubElement(
+        #     addr,
+        #     "АдрРФ",
+        #     Индекс=data.seller.address.postal_code or "",
+        #     КодРегион=data.seller.address.region_code,
+        #     НаимРегион=data.seller.address.region_name,
+        #     Улица=data.seller.address.street or "",
+        #     Дом=data.seller.address.house or "",
+        #     Корпус=data.seller.address.building or "",
+        #     Кварт=data.seller.address.apartment or "",
+        # )
         # Можно добавить Город, НаселПункт, если есть
 
         # ДокПодтвОтгрНом (документ-основание)
@@ -116,18 +216,21 @@ class UpdGenerator:
             ИННЮЛ=data.buyer.inn,
             КПП=data.buyer.kpp,
         )
-        addr_pok = etree.SubElement(sv_pok, "Адрес")
-        addr_rf_pok = etree.SubElement(
-            addr_pok,
-            "АдрРФ",
-            Индекс=data.buyer.address.postal_code or "",
-            КодРегион=data.buyer.address.region_code,
-            НаимРегион=data.buyer.address.region_name,
-            Улица=data.buyer.address.street or "",
-            Дом=data.buyer.address.house or "",
-            Корпус=data.buyer.address.building or "",
-            Кварт=data.buyer.address.apartment or "",
-        )
+
+        self._add_address(sv_pok, data.buyer.address)
+
+        # addr_pok = etree.SubElement(sv_pok, "Адрес")
+        # addr_rf_pok = etree.SubElement(
+        #     addr_pok,
+        #     "АдрРФ",
+        #     Индекс=data.buyer.address.postal_code or "",
+        #     КодРегион=data.buyer.address.region_code,
+        #     НаимРегион=data.buyer.address.region_name,
+        #     Улица=data.buyer.address.street or "",
+        #     Дом=data.buyer.address.house or "",
+        #     Корпус=data.buyer.address.building or "",
+        #     Кварт=data.buyer.address.apartment or "",
+        # )
 
         # ДенИзм (валюта)
         etree.SubElement(
@@ -161,8 +264,8 @@ class UpdGenerator:
                 "СведТов",
                 НомСтр=str(item.row_num),
                 НаимТов=item.name,
-                ОКЕИ_Тов=item.oktei_code,
-                НаимЕдИзм=item.oktei_name,
+                ОКЕИ_Тов=item.okei_code,
+                НаимЕдИзм=item.okei_name,
                 КолТов=str(item.quantity),
                 ЦенаТов=f"{item.price_without_vat:.2f}",
                 СтТовБезНДС=f"{item.total_without_vat:.2f}",
@@ -280,6 +383,20 @@ class UpdGenerator:
             self.xsd_schema.assertValid(root)
         except etree.DocumentInvalid as e:
             logger.error("Ошибка валидации XSD: %s", e)
+            # Сохраняем XML в файл для отладки
+            error_file = "validation_err.txt"
+            with open(error_file, "w", encoding="utf-8") as f:
+                f.write(xml_str)
+            logger.error("XML сохранён в %s", error_file)
+            # Выводим детали ошибок
+            lines = xml_str.splitlines()
+            for error in e.error_log:
+                line_text = ""
+                if error.line and 0 < error.line <= len(lines):
+                    line_text = lines[error.line - 1].strip()
+                logger.error("  %s (line %s, column %s) %s",
+                             error.message, error.line, error.column, line_text)
+
             raise
         except Exception as e:
             logger.error("Ошибка при валидации: %s", e)

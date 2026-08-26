@@ -15,6 +15,7 @@ from upd_generator import UpdGenerator
 LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)20s()] \
             %(levelname)-7s | %(asctime)-15s | %(message)s'
 
+# logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,12 @@ def main():
         help="Номер УПД (присваиваемый при генерации)",
     )
     parser.add_argument(
+        "--address-format",
+        choices=["rf", "gar"],
+        default="rf",
+        help="Формат адреса: rf - АдрРФ, gar - АдрГАР",
+    )
+    parser.add_argument(
         "--use-json",
         action="store_true",
         help="Использовать JSON-файл вместо БД (для отладки)",
@@ -49,7 +56,7 @@ def main():
     parser.add_argument(
         "--xsd-path",
         type=str,
-        default="ON_NSCHFDOPPR_1_997_01_05_03_04.xsd",
+        default="ON_NSCHFDOPPR_1_997_01_05_03_05.xsd",
         help="Путь к XSD-схеме",
     )
     parser.add_argument(
@@ -69,12 +76,15 @@ def main():
     extractor = DataExtractor(
         use_json=args.use_json,
         json_path=args.json_path,
+        address_format=args.address_format,
     )
     try:
         bill_data = extractor.get_bill_data(args.bill_number, args.upd_number)
     except Exception as e:
         logger.error("Ошибка извлечения данных: %s", e)
         sys.exit(1)
+
+    logger.info("Данные извлечены, количество позиций в счёте: %s", len(bill_data.items))
 
     # seller_id = bill_data.seller.inn          # выбор ЭДО Ид
     # buyer_id = bill_data.buyer.inn

@@ -3,11 +3,16 @@
 data_extractor.py - Извлечение данных для УПД из PostgreSQL или JSON.
 Использует LoggingConnection для логирования запросов.
 Поддерживает .pgpass для аутентификации.
+
+_load_from_db()	Адрес продавца/покупателя заполняется частично (регион из ИНН, название региона и улица – константы).
+_load_from_db()	Даты (основание, передача) установлены фиксированными (2026-08-10, 2026-08-14).
+_load_from_db()	Банковские реквизиты могут быть пустыми.
 """
 
 import json
 import logging
 import os
+import uuid
 from contextlib import contextmanager
 from datetime import date
 from typing import Any, Dict, List, Optional, Union
@@ -18,8 +23,9 @@ import psycopg2.pool
 from psycopg2 import sql
 from psycopg2.extras import LoggingConnection, LoggingCursor
 
-from db_mapping import (AddressRF, Bank, BillData, BillItem, Buyer, Seller,
-                        Signer, Tax)
+from db_mapping import (AddressGAR, AddressRF, Bank, BillData, BillItem, Buyer,
+                        NomerTip, Seller, Signer, Tax, TipNaim, VidNaim,
+                        VidNaimKod)
 
 logger = logging.getLogger(__name__)
 
@@ -195,7 +201,8 @@ class DataExtractor:
     Извлекает данные для УПД из БД или из JSON-файла.
     """
 
-    def __init__(self, use_json: bool = False, json_path: str = "sample_data.json"):
+    def __init__(self, use_json: bool = False, json_path: str = "sample_data.json",
+                 address_format: str = "rf"):
         """
         Args:
             use_json: Если True, читать из JSON вместо БД.
@@ -203,6 +210,7 @@ class DataExtractor:
         """
         self.use_json = use_json
         self.json_path = json_path
+        self.address_format = address_format
         self.pg = PGManager() if not use_json else None
 
     def get_bill_data(self, bill_no: int, upd_number: str) -> BillData:
@@ -237,6 +245,7 @@ class DataExtractor:
                    bc."КодСодержания" AS article,
                    bc."Наименование" AS item_name,
                    bc."Кол-во" AS quantity,
+                   bc."КодОКЕИ"::text AS mes_code,
                    bc."Ед Изм" AS mes_unit,
                    bc."ЦенаНДС" AS price_with_vat,
                    em.mark AS kiz
@@ -303,14 +312,30 @@ class DataExtractor:
         # Для простоты предположим, что адрес в БД хранится как текст,
         # и мы не можем его разбить на составные. Поэтому заполним только текстовое поле.
         # В реальном проекте нужно либо парсить, либо хранить структурированно.
-        seller_address = AddressRF(
-            # region_code="78",
-            region_code=seller_raw["inn"][:2],  # первые два символа из ИНН
-            region_name="г. Санкт-Петербург",
-            postal_code=seller_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
-            street=seller_raw["address_text"][16:36],
-            house=seller_raw["address_text"][37:41],
-        )
+        if self.address_format == "gar":
+            seller_address = AddressGAR(
+                id_num=str(uuid.uuid4()),
+                index=seller_raw["address_text"][:6] if seller_raw.get("address_text") else "",
+                region_code=seller_raw["inn"][:2],
+                # заглушки
+                region_name="г. Санкт-Петербург",
+                municipal_district=VidNaimKod(vid_kod="3", naim="Муниципальный округ Имярек"),
+                locality=VidNaim(vid="город", naim="Санкт-Петербург"),
+            )
+            logging.debug('seller_address(AddressGAR)=%s', seller_address)
+        else:
+            seller_address = AddressRF(
+                region_code=seller_raw["inn"][:2],
+                region_name="г. Санкт-Петербург",
+                postal_code=seller_raw["address_text"][:6] if seller_raw.get("address_text") else "",
+                # street=seller_raw["address_text"][16:36] if seller_raw.get("address_text") else "",
+                # house=seller_raw["address_text"][37:41] if seller_raw.get("address_text") else "",
+                street="Хардкоженная",
+                house="13",
+            )
+            logging.debug('seller_address(AddressRF)=%s', seller_address)
+        # ? аналогично для buyer_address
+
         buyer_address = AddressRF(
             region_code=buyer_raw["inn"][:2],  # первые два символа из ИНН
             region_name="TODO: Регион покупателя",
@@ -358,7 +383,7 @@ class DataExtractor:
             # Вычисляем цену без НДС из цены с НДС и ставки
             # Для простоты возьмём ставку из seller_raw (одинаковая для всех товаров)
             vat_rate_str = seller_raw.get("vat_rate", "22%")
-            # Преобразуем "22%" в 0.2 для вычислений
+            # Преобразуем "22%" в 0.22 для вычислений
             try:
                 vat_rate_num = float(vat_rate_str.replace("%", "")) / 100.0
             except ValueError:
@@ -380,8 +405,8 @@ class DataExtractor:
                 BillItem(
                     row_num=row["row_num"],
                     name=row["item_name"],
-                    oktei_code=row.get("mes_unit", "796"),  # код "шт"
-                    oktei_name="шт",  # можно получить из справочника
+                    okei_code=row.get("mes_code", "796"),
+                    okei_name=row.get("mes_unit", "шт"),
                     quantity=quantity,
                     price_without_vat=price_without_vat,
                     total_without_vat=total_without_vat,
