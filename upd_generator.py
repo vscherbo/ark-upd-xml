@@ -196,6 +196,15 @@ class UpdGenerator:
         # )
         # Можно добавить Город, НаселПункт, если есть
 
+        # Платёжный документ
+        logger.debug('НомерПРД=%s', data.payment_doc_number)
+        etree.SubElement(
+            sv_sch,
+            "СвПРД",
+            НомерПРД=data.payment_doc_number,
+            ДатаПРД=data.payment_doc_date.strftime("%d.%m.%Y"),
+        )
+
         # ДокПодтвОтгрНом (документ-основание)
         logger.debug('РеквНомерДок=%s', data.upd_number)
         etree.SubElement(

@@ -229,7 +229,7 @@ class DataExtractor:
         # Получаем основную информацию о счёте
         bill_info = self.pg.fetch_one(
             """
-            SELECT "№ счета" AS bill_number,
+            SELECT "№ счета"::varchar AS bill_number,
                    "Дата счета" AS bill_date,
                    "фирма" AS seller_id,
                    "Накладная" as nakl,
@@ -239,8 +239,8 @@ class DataExtractor:
                    "ДатаАвансФактуры" as data_avans,
                    "Сдача" as ready_date,
                    "ППномер" as pp_nomer,
-                   "ПП№" as paymnet_doc_number,
-                   p."ДатаПП" as paymnet_doc_date,
+                   "ПП№" as payment_doc_number,
+                   p."ДатаПП" as payment_doc_date,
                    "Код" AS buyer_id
             FROM arc_energo."Счета"
             JOIN arc_energo."ОплатыНТУ" p ON p."Счет" = "№ счета"
@@ -280,6 +280,7 @@ class DataExtractor:
                 f."Ф_ИНН" AS inn,
                 fr."Ф_КПП" AS kpp,
                 f."Название" AS name,
+                f."ПрефиксВСчет" AS prefix,
                 fr."Ф_ЮрАдрес" AS address_text,
                 fr."Ф_ОКПО" AS okpo,
                 f."Ф_ОГРН" AS ogrn,
@@ -360,6 +361,7 @@ class DataExtractor:
             kpp=seller_raw["kpp"],
             ogrn=seller_raw.get("ogrn"),
             okpo=seller_raw.get("okpo"),
+            prefix=seller_raw.get("prefix"),
             address=seller_address,
         )
 
@@ -453,7 +455,7 @@ class DataExtractor:
         # ... РеквДатаДок="01.07.2026"/>
         #
         bill_data = BillData(
-            bill_number=str(bill_info["bill_number"]),
+            bill_number=bill_info["bill_number"],
             bill_date=bill_info["bill_date"],
             upd_number=bill_info["nom_factura"],
             upd_date=bill_info["factura"],
@@ -467,18 +469,19 @@ class DataExtractor:
             tax=tax,
             signer=signer,
             items=items,
-            paymnet_doc_number=str(bill_info["paymnet_doc_number"]),
-            # payment_doc_date=bill_info["payment_doc_date"],
+            payment_doc_number=str(bill_info["payment_doc_number"]),
+            payment_doc_date=bill_info["payment_doc_date"],
             # basis_doc_name="Договор продажи",
             # basis_doc_number="КИП4828",
             basis_doc_name="Договор продажи",
-            basis_doc_number="КИП4828",
-            basis_doc_date=date(2026, 8, 10),
+            basis_doc_number=f'{seller.prefix} \
+{bill_info["bill_number"][:4]}-{bill_info["bill_number"][4:]}',
+            basis_doc_date=bill_info["bill_date"],  # adjust???
             operation_content="Товары переданы",
             operation_type="продажа",
-            transfer_date=date(2026, 8, 14),
-            transfer_start_date=date(2026, 8, 14),
-            transfer_end_date=date(2026, 8, 14),
+            transfer_date=bill_info["ready_date"],
+            transfer_start_date=bill_info["ready_date"],
+            transfer_end_date=bill_info["ready_date"],
             transport_info="самовывоз",
             incoterms="EXW",
             incoterms_version="2020",

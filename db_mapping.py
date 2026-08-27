@@ -77,6 +77,7 @@ class Seller(BaseModel):
     kpp: str = Field(..., description="КПП")
     ogrn: Optional[str] = Field(None, description="ОГРН")
     okpo: Optional[str] = Field(None, description="ОКПО")
+    prefix: Optional[str] = Field(None, description="Префикс в счёт")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
     # Дополнительные реквизиты, если нужны
     short_name: Optional[str] = Field(None, description="Сокращенное наименование")
@@ -146,10 +147,11 @@ class BillItem(BaseModel):
 
 class BillData(BaseModel):
     """Полный набор данных для генерации УПД."""
-    bill_number: str = Field(..., description="Номер счета-фактуры (основания)")
+    bill_number: str = Field(..., description="Номер счета (основания)")
     bill_date: date = Field(..., description="Дата счета")
     upd_number: str = Field(..., description="Номер УПД")
     upd_date: date = Field(..., description="Дата УПД")
+    # ready_date: date = Field(..., description="Сдача")  # adjust ???
     upd_file: str = Field(..., description="Имя файла УПД по правилам")
     function: Literal["СЧФ", "СЧФДОП", "ДОП", "СвРК", "СвЗК"] = Field(
         "СЧФДОП",
@@ -166,8 +168,8 @@ class BillData(BaseModel):
     seller: Seller
     buyer: Buyer
     bank: Optional[Bank] = None
-    paymnet_doc_number: str = Field(None, description="Номер платёжного документа")
-    paymnet_doc_date: date = Field(None, description="Дата платёжного документа")
+    payment_doc_number: str = Field(None, description="Номер платёжного документа")
+    payment_doc_date: date = Field(None, description="Дата платёжного документа")
     tax: Tax
     signer: Signer
     items: List[BillItem] = Field(default_factory=list)
