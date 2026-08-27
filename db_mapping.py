@@ -148,8 +148,8 @@ class BillData(BaseModel):
     """Полный набор данных для генерации УПД."""
     bill_number: str = Field(..., description="Номер счета-фактуры (основания)")
     bill_date: date = Field(..., description="Дата счета")
-    upd_number: str = Field(..., description="Номер УПД (присваивается при генерации)")
-    upd_date: date = Field(..., description="Дата УПД (обычно текущая)")
+    upd_number: str = Field(..., description="Номер УПД")
+    upd_date: date = Field(..., description="Дата УПД")
     upd_file: str = Field(..., description="Имя файла УПД по правилам")
     function: Literal["СЧФ", "СЧФДОП", "ДОП", "СвРК", "СвЗК"] = Field(
         "СЧФДОП",
@@ -166,6 +166,8 @@ class BillData(BaseModel):
     seller: Seller
     buyer: Buyer
     bank: Optional[Bank] = None
+    paymnet_doc_number: str = Field(None, description="Номер платёжного документа")
+    paymnet_doc_date: date = Field(None, description="Дата платёжного документа")
     tax: Tax
     signer: Signer
     items: List[BillItem] = Field(default_factory=list)

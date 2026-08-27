@@ -215,15 +215,16 @@ class DataExtractor:
         self.address_format = address_format
         self.pg = PGManager() if not use_json else None
 
-    def get_bill_data(self, bill_no: int, upd_number: str) -> BillData:
+    # def get_bill_data(self, bill_no: int, upd_number: str) -> BillData:
+    def get_bill_data(self, bill_no: int) -> BillData:
         """
         Получить все данные для генерации УПД по номеру счёта.
         """
         if self.use_json:
-            return self._load_from_json(bill_no, upd_number)
-        return self._load_from_db(bill_no, upd_number)
+            return self._load_from_json(bill_no, 'HARD-1234')
+        return self._load_from_db(bill_no)
 
-    def _load_from_db(self, bill_no: int, upd_number: str) -> BillData:
+    def _load_from_db(self, bill_no: int) -> BillData:
         """Извлечение из PostgreSQL."""
         # Получаем основную информацию о счёте
         bill_info = self.pg.fetch_one(
@@ -231,8 +232,18 @@ class DataExtractor:
             SELECT "№ счета" AS bill_number,
                    "Дата счета" AS bill_date,
                    "фирма" AS seller_id,
+                   "Накладная" as nakl,
+                   "Фактура" as factura,
+                   "№ Фактуры"::varchar as nom_factura,
+                   "№АвансФактуры" as nom_avans,
+                   "ДатаАвансФактуры" as data_avans,
+                   "Сдача" as ready_date,
+                   "ППномер" as pp_nomer,
+                   "ПП№" as paymnet_doc_number,
+                   p."ДатаПП" as paymnet_doc_date,
                    "Код" AS buyer_id
             FROM arc_energo."Счета"
+            JOIN arc_energo."ОплатыНТУ" p ON p."Счет" = "№ счета"
             WHERE "№ счета" = %s
             """,
             (bill_no,)
@@ -420,6 +431,10 @@ class DataExtractor:
                 )
             )
 
+        FACT_HOUSING_NAME = "ДОКУМЕНТ об отгрузке товаров (выполнении работ), передаче \
+имущественных прав (документ об оказании услуг)"
+        DOC_NAME_OPERATOR = "СЧЕТ-ФАКТУРА и документ об отгрузке товаров (выполнении работ), \
+передаче имущественных прав (документ об оказании услуг)"
         # Формируем BillData
         # ???
         # <Документ КНД="1115131" Функция="СЧФДОП" ПоФактХЖ="Документ об...
@@ -440,18 +455,22 @@ class DataExtractor:
         bill_data = BillData(
             bill_number=str(bill_info["bill_number"]),
             bill_date=bill_info["bill_date"],
-            upd_number=upd_number,
-            upd_date=date.today(),
+            upd_number=bill_info["nom_factura"],
+            upd_date=bill_info["factura"],
             upd_file="",
             function="СЧФДОП",
-            fact_housing_name="Документ об отгрузке товаров (выполнении работ), передаче имущественных прав (документ об оказании услуг)",
-            doc_name_operator="Счет-фактура и документ об отгрузке товаров (выполнении работ), передаче имущественных прав (документ об оказании услуг)",
+            fact_housing_name=FACT_HOUSING_NAME,
+            doc_name_operator=DOC_NAME_OPERATOR,
             seller=seller,
             buyer=buyer,
             bank=bank,
             tax=tax,
             signer=signer,
             items=items,
+            paymnet_doc_number=str(bill_info["paymnet_doc_number"]),
+            # payment_doc_date=bill_info["payment_doc_date"],
+            # basis_doc_name="Договор продажи",
+            # basis_doc_number="КИП4828",
             basis_doc_name="Договор продажи",
             basis_doc_number="КИП4828",
             basis_doc_date=date(2026, 8, 10),

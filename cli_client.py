@@ -30,12 +30,12 @@ def main():
         required=True,
         help="Номер счёта (из базы данных)",
     )
-    parser.add_argument(
-        "--upd-number",
-        type=str,
-        required=True,
-        help="Номер УПД (присваиваемый при генерации)",
-    )
+    # parser.add_argument(
+    #     "--upd-number",
+    #     type=str,
+    #     required=True,
+    #     help="Номер УПД (присваиваемый при генерации)",
+    # )
     parser.add_argument(
         "--address-format",
         choices=["rf", "gar"],
@@ -79,7 +79,8 @@ def main():
         address_format=args.address_format,
     )
     try:
-        bill_data = extractor.get_bill_data(args.bill_number, args.upd_number)
+        # bill_data = extractor.get_bill_data(args.bill_number, args.upd_number)
+        bill_data = extractor.get_bill_data(args.bill_number)
     except Exception as e:
         logger.error("Ошибка извлечения данных: %s", e)
         sys.exit(1)
