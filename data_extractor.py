@@ -6,8 +6,12 @@ data_extractor.py - Извлечение данных для УПД из Postgre
 
 _load_from_db()
 Адрес продавца/покупателя заполняется частично (регион из ИНН, название региона и улица – константы).
-Даты (основание, передача) установлены фиксированными (2026-08-10, 2026-08-14).
-Банковские реквизиты могут быть пустыми.
+--- Даты (основание, передача) установлены фиксированными (2026-08-10, 2026-08-14).
+basis_doc_name="Договор продажи",
+basis_doc_number="КИП4828",
+transport_info="самовывоз",
+incoterms="EXW",
+incoterms_version="2020",
 Signer: auth_method="1",  # по умолчанию без доверенности
 """
 
@@ -223,6 +227,53 @@ class DataExtractor:
         if self.use_json:
             return self._load_from_json(bill_no, 'HARD-1234')
         return self._load_from_db(bill_no)
+
+    def _get_address_from_gran_address(self, firm_name: str) -> Optional[AddressRF]:
+        """
+        Получить адрес из таблицы ext.gran_address по полю "фирма".
+        Возвращает объект AddressRF или None, если запись не найдена.
+        """
+        if not firm_name:
+            return None
+        row = self.pg.fetch_one(
+            """
+            SELECT
+                postal_code,
+                region,
+                region_kladr_id,
+                city_district,
+                city,
+                settlement,
+                street,
+                house,
+                block,
+                flat
+            FROM ext.gran_address
+            WHERE фирма = %s
+            """,
+            (firm_name,)
+        )
+        if not row:
+            logger.warning("Адрес для фирмы '%s' не найден в gran_address", firm_name)
+            return None
+
+        # Код региона: первые 2 цифры из region_kladr_id (например, "78")
+        region_code = ""
+        if row.get("region_kladr_id") and len(row["region_kladr_id"]) >= 2:
+            region_code = row["region_kladr_id"][:2]
+
+        return AddressRF(
+            postal_code=row.get("postal_code"),
+            region_code=region_code,
+            region_name=row.get("region"),
+            district=row.get("city_district"),
+            city=row.get("city"),
+            locality=row.get("settlement"),
+            street=row.get("street"),
+            house=row.get("house"),
+            building=row.get("block"),
+            apartment=row.get("flat"),
+        )
 
     def _load_from_db(self, bill_no: int) -> BillData:
         """Извлечение из PostgreSQL."""
