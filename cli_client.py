@@ -89,12 +89,15 @@ def main():
 
     # seller_id = bill_data.seller.inn          # выбор ЭДО Ид
     # buyer_id = bill_data.buyer.inn
-    seller_id = '2LT-600072763'
-    buyer_id = '2LT-600070554'
+    # seller_id = '2LT-600072763'
+    # buyer_id = '2LT-600070554'
+    seller_id = bill_data.seller.seller_edo_id
+    buyer_id = bill_data.buyer.buyer_edo_id
 
     has_kiz = any(item.kiz_list for item in bill_data.items)
+    upd_date = bill_data.upd_date.strftime("%Y%m%d")
 
-    id_file = FilenameGenerator.generate(seller_id, buyer_id, has_kiz)
+    id_file = FilenameGenerator.generate(seller_id, buyer_id, upd_date, has_kiz)
     logger.debug('id_file=%s', id_file)
     bill_data.upd_file = id_file
 

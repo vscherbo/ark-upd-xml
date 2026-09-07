@@ -33,6 +33,110 @@ from db_mapping import (AddressGAR, AddressRF, Bank, BillData, BillItem, Buyer,
                         NomerTip, Seller, Signer, Tax, TipNaim, VidNaim,
                         VidNaimKod)
 
+REGIONS_RU = {
+    "01": "Республика Адыгея",
+    "02": "Республика Башкортостан",
+    "03": "Республика Бурятия",
+    "04": "Республика Алтай",
+    "05": "Республика Дагестан",
+    "06": "Республика Ингушетия",
+    "07": "Кабардино‑Балкарская Республика",
+    "08": "Республика Калмыкия",
+    "09": "Карачаево‑Черкесская Республика",
+    "10": "Республика Карелия",
+    "11": "Республика Коми",
+    "12": "Республика Марий Эл",
+    "13": "Республика Мордовия",
+    "14": "Республика Саха (Якутия)",
+    "15": "Республика Северная Осетия — Алания",
+    "16": "Республика Татарстан",
+    "17": "Республика Тыва",
+    "18": "Удмуртская Республика",
+    "19": "Республика Хакасия",
+    "20": "Чеченская Республика",
+    "21": "Чувашская Республика",
+    "22": "Алтайский край",
+    "23": "Краснодарский край",
+    "24": "Красноярский край",
+    "25": "Приморский край",
+    "26": "Ставропольский край",
+    "27": "Хабаровский край",
+    "28": "Амурская область",
+    "29": "Архангельская область",
+    "30": "Астраханская область",
+    "31": "Белгородская область",
+    "32": "Брянская область",
+    "33": "Владимирская область",
+    "34": "Волгоградская область",
+    "35": "Вологодская область",
+    "36": "Воронежская область",
+    "37": "Ивановская область",
+    "38": "Иркутская область",
+    "39": "Калининградская область",
+    "40": "Калужская область",
+    "41": "Камчатский край",
+    "42": "Кемеровская область — Кузбасс",
+    "43": "Кировская область",
+    "44": "Костромская область",
+    "45": "Курганская область",
+    "46": "Курская область",
+    "47": "Ленинградская область",
+    "48": "Липецкая область",
+    "49": "Магаданская область",
+    "50": "Московская область",
+    "51": "Мурманская область",
+    "52": "Нижегородская область",
+    "53": "Новгородская область",
+    "54": "Новосибирская область",
+    "55": "Омская область",
+    "56": "Оренбургская область",
+    "57": "Орловская область",
+    "58": "Пензенская область",
+    "59": "Пермский край",
+    "60": "Псковская область",
+    "61": "Ростовская область",
+    "62": "Рязанская область",
+    "63": "Самарская область",
+    "64": "Саратовская область",
+    "65": "Сахалинская область",
+    "66": "Свердловская область",
+    "67": "Смоленская область",
+    "68": "Тамбовская область",
+    "69": "Тверская область",
+    "70": "Томская область",
+    "71": "Тульская область",
+    "72": "Тюменская область",
+    "73": "Ульяновская область",
+    "74": "Челябинская область",
+    "75": "Забайкальский край",
+    "76": "Ярославская область",
+    "77": "Москва",
+    "78": "Санкт‑Петербург",
+    "79": "Еврейская автономная область",
+    "83": "Ненецкий автономный округ",
+    "86": "Ханты‑Мансийский автономный округ — Югра",
+    "87": "Чукотский автономный округ",
+    "89": "Ямало‑Ненецкий автономный округ",
+    "91": "Республика Крым",
+    "92": "Севастополь"
+}
+
+"""
+Автоматика: 2LT-11001972830
+АРКОМ: 2LT-11004384984
+ОСЗ: 2LT-11004334116
+КИПСПБ: 2LT-11000833475
+ТДЭС: 2LT-11004343446
+
+### ПЕСОЧНИЦА ###
+Автоматика: 2LT-600070554
+АРКОМ: 2LT-600072817
+ОСЗ: 2LT-600070624
+КИПСПБ: 2LT-600072763
+ТДЭС: 2LT-600072775
+"""
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -219,7 +323,6 @@ class DataExtractor:
         self.address_format = address_format
         self.pg = PGManager() if not use_json else None
 
-    # def get_bill_data(self, bill_no: int, upd_number: str) -> BillData:
     def get_bill_data(self, bill_no: int) -> BillData:
         """
         Получить все данные для генерации УПД по номеру счёта.
@@ -247,7 +350,8 @@ class DataExtractor:
                 street,
                 house,
                 block,
-                flat
+                flat,
+                ogrn
             FROM ext.gran_address
             WHERE фирма = %s
             """,
@@ -341,7 +445,8 @@ class DataExtractor:
                 fr."Ф_КоррСчет" AS corr_account,
                 vat_rate(b."фирма", b."Код", b."Дата счета"::date) || '%%' AS vat_rate,
                 fs.signer_position,
-                fs.signer_fio
+                fs.signer_fio,
+                edo_id(f."Ф_ИНН", fr."Ф_КПП") AS seller_edo_id
             FROM arc_energo."Счета" b
             JOIN arc_energo."ФирмаРеквизиты" fr
                 ON fr."КодРеквизитовФирмы" = b."КодРеквизитовФирмы"
@@ -364,7 +469,8 @@ class DataExtractor:
             SELECT e."ИНН" AS inn,
                    e."КПП" AS kpp,
                    e."Предприятие" AS name,
-                   e."ЮрАдрес" AS address_text
+                   e."ЮрАдрес" AS address_text,
+                   edo_id(e."ИНН", e."КПП") as buyer_edo_id
             FROM arc_energo."Предприятия" e
             WHERE e."Код" = %s
             """,
@@ -374,36 +480,15 @@ class DataExtractor:
             raise ValueError(f"Покупатель с кодом {bill_info['buyer_id']} не найден")
 
         # Собираем структуру данных
-        # Для простоты предположим, что адрес в БД хранится как текст,
-        # и мы не можем его разбить на составные. Поэтому заполним только текстовое поле.
-        # В реальном проекте нужно либо парсить, либо хранить структурированно.
-        if self.address_format == "gar":
-            seller_address = AddressGAR(
-                id_num=str(uuid.uuid4()),
-                index=seller_raw["address_text"][:6] if seller_raw.get("address_text") else "",
-                region_code=seller_raw["inn"][:2],
-                # заглушки
-                region_name="г. Санкт-Петербург",
-                municipal_district=VidNaimKod(vid_kod="3", naim="Муниципальный округ Имярек"),
-                locality=VidNaim(vid="город", naim="Санкт-Петербург"),
-            )
-            logging.debug('seller_address(AddressGAR)=%s', seller_address)
-        else:
-            seller_address = AddressRF(
-                region_code=seller_raw["inn"][:2],
-                region_name="г. Санкт-Петербург",
-                postal_code=seller_raw["address_text"][:6] if seller_raw.get("address_text") else "",
-                # street=seller_raw["address_text"][16:36] if seller_raw.get("address_text") else "",
-                # house=seller_raw["address_text"][37:41] if seller_raw.get("address_text") else "",
-                street="Хардкоженная",
-                house="13",
-            )
-            logging.debug('seller_address(AddressRF)=%s', seller_address)
-        # ? аналогично для buyer_address
+        # --- Получение адреса продавца ---
+        seller_address = None
+        if bill_info["seller_id"]:
+            seller_address = self._get_address_from_gran_address(bill_info["seller_id"])
 
         buyer_address = AddressRF(
+            # postal_code=buyer_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
             region_code=buyer_raw["inn"][:2],  # первые два символа из ИНН
-            region_name="TODO: Регион покупателя",
+            region_name=REGIONS_RU.get(buyer_raw["inn"][:2], 'неизвестный код региона')
         )
 
         seller = Seller(
@@ -413,6 +498,7 @@ class DataExtractor:
             ogrn=seller_raw.get("ogrn"),
             okpo=seller_raw.get("okpo"),
             prefix=seller_raw.get("prefix"),
+            seller_edo_id=seller_raw.get("seller_edo_id"),
             address=seller_address,
         )
 
@@ -421,6 +507,7 @@ class DataExtractor:
             inn=buyer_raw["inn"],
             kpp=buyer_raw.get("kpp", ""),
             address=buyer_address,
+            buyer_edo_id=buyer_raw.get("buyer_edo_id"),
         )
 
         bank = Bank(
@@ -506,6 +593,8 @@ class DataExtractor:
         # <ОснПер РеквНаимДок="Основной договор" РеквНомерДок="Счет К 4430-2613" ...
         # ... РеквДатаДок="01.07.2026"/>
         #
+        # Количество (всего)
+        #
         bill_data = BillData(
             bill_number=bill_info["bill_number"],
             bill_date=bill_info["bill_date"],
@@ -534,9 +623,9 @@ class DataExtractor:
             transfer_date=bill_info["ready_date"],
             transfer_start_date=bill_info["ready_date"],
             transfer_end_date=bill_info["ready_date"],
-            transport_info="самовывоз",
-            incoterms="EXW",
-            incoterms_version="2020",
+            # transport_info="самовывоз",
+            # incoterms="EXW",
+            # incoterms_version="2020",
         )
         return bill_data
 

@@ -79,6 +79,7 @@ class Seller(BaseModel):
     okpo: Optional[str] = Field(None, description="ОКПО")
     prefix: Optional[str] = Field(None, description="Префикс в счёт")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
+    seller_edo_id: str = Field(..., description="ЭДО Ид")
     # Дополнительные реквизиты, если нужны
     short_name: Optional[str] = Field(None, description="Сокращенное наименование")
     opf_code: Optional[str] = Field(None, description="Код ОПФ")
@@ -125,6 +126,7 @@ class Buyer(BaseModel):
     inn: str = Field(..., description="ИНН")
     kpp: str = Field(..., description="КПП")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
+    buyer_edo_id: str = Field(..., description="ЭДО Ид")
 
 
 class BillItem(BaseModel):

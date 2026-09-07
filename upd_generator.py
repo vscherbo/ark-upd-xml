@@ -182,20 +182,6 @@ class UpdGenerator:
         # Адрес продавца
         self._add_address(sv_prod, data.seller.address)
 
-        # addr = etree.SubElement(sv_prod, "Адрес")
-        # addr_rf = etree.SubElement(
-        #     addr,
-        #     "АдрРФ",
-        #     Индекс=data.seller.address.postal_code or "",
-        #     КодРегион=data.seller.address.region_code,
-        #     НаимРегион=data.seller.address.region_name,
-        #     Улица=data.seller.address.street or "",
-        #     Дом=data.seller.address.house or "",
-        #     Корпус=data.seller.address.building or "",
-        #     Кварт=data.seller.address.apartment or "",
-        # )
-        # Можно добавить Город, НаселПункт, если есть
-
         # Платёжный документ
         logger.debug('НомерПРД=%s', data.payment_doc_number)
         etree.SubElement(
@@ -227,19 +213,6 @@ class UpdGenerator:
         )
 
         self._add_address(sv_pok, data.buyer.address)
-
-        # addr_pok = etree.SubElement(sv_pok, "Адрес")
-        # addr_rf_pok = etree.SubElement(
-        #     addr_pok,
-        #     "АдрРФ",
-        #     Индекс=data.buyer.address.postal_code or "",
-        #     КодРегион=data.buyer.address.region_code,
-        #     НаимРегион=data.buyer.address.region_name,
-        #     Улица=data.buyer.address.street or "",
-        #     Дом=data.buyer.address.house or "",
-        #     Корпус=data.buyer.address.building or "",
-        #     Кварт=data.buyer.address.apartment or "",
-        # )
 
         # ДенИзм (валюта)
         etree.SubElement(
