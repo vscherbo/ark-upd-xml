@@ -75,7 +75,7 @@ class Seller(BaseModel):
     name: str = Field(..., description="Полное наименование")
     inn: str = Field(..., description="ИНН")
     kpp: str = Field(..., description="КПП")
-    ogrn: Optional[str] = Field(None, description="ОГРН")
+    ogrn: str = Field(None, description="ОГРН")
     okpo: Optional[str] = Field(None, description="ОКПО")
     prefix: Optional[str] = Field(None, description="Префикс в счёт")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
@@ -125,6 +125,7 @@ class Buyer(BaseModel):
     name: str = Field(..., description="Полное наименование")
     inn: str = Field(..., description="ИНН")
     kpp: str = Field(..., description="КПП")
+    ogrn: str = Field(..., description="ОГРН")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
     buyer_edo_id: str = Field(..., description="ЭДО Ид")
 

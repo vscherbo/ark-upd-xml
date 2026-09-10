@@ -312,7 +312,7 @@ class DataExtractor:
     """
 
     def __init__(self, use_json: bool = False, json_path: str = "sample_data.json",
-                 address_format: str = "rf"):
+                 address_format: str = "rf", edo_prefix: str = 'edo_lite'):
         """
         Args:
             use_json: Если True, читать из JSON вместо БД.
@@ -321,6 +321,7 @@ class DataExtractor:
         self.use_json = use_json
         self.json_path = json_path
         self.address_format = address_format
+        self.edo_prefix = edo_prefix
         self.pg = PGManager() if not use_json else None
 
     def get_bill_data(self, bill_no: int) -> BillData:
@@ -353,7 +354,7 @@ class DataExtractor:
                 flat,
                 ogrn
             FROM ext.gran_address
-            WHERE фирма = %s
+            WHERE ogrn = %s
             """,
             (firm_name,)
         )
@@ -409,10 +410,11 @@ class DataExtractor:
         # Получаем строки счёта
         items_raw = self.pg.fetch_all(
             """
-            SELECT bc."ПозицияСчета" AS row_num,
+            SELECT ROW_NUMBER() OVER (ORDER BY bc."ПозицияСчета" ASC) AS row_num,
+                   -- bc."ПозицияСчета" AS row_num,
                    bc."КодСодержания" AS article,
                    bc."Наименование" AS item_name,
-                   bc."Кол-во" AS quantity,
+                   r."Отгружено" AS quantity,
                    bc."КодОКЕИ"::text AS mes_code,
                    bc."Ед Изм" AS mes_unit,
                    bc."ЦенаНДС" AS price_with_vat,
@@ -446,7 +448,7 @@ class DataExtractor:
                 vat_rate(b."фирма", b."Код", b."Дата счета"::date) || '%%' AS vat_rate,
                 fs.signer_position,
                 fs.signer_fio,
-                edo_id(f."Ф_ИНН", fr."Ф_КПП") AS seller_edo_id
+                edo_id(%s, f."Ф_ИНН", fr."Ф_КПП") AS seller_edo_id
             FROM arc_energo."Счета" b
             JOIN arc_energo."ФирмаРеквизиты" fr
                 ON fr."КодРеквизитовФирмы" = b."КодРеквизитовФирмы"
@@ -458,7 +460,7 @@ class DataExtractor:
             ) AS fs ON true
             WHERE b."№ счета" = %s
             """,
-            (bill_no,)
+            (self.edo_prefix, bill_no,)
         )
         if not seller_raw:
             raise ValueError(f"Продавец для счёта {bill_no} не найден")
@@ -468,13 +470,14 @@ class DataExtractor:
             """
             SELECT e."ИНН" AS inn,
                    e."КПП" AS kpp,
+                   e."ОГРН" AS ogrn,
                    e."Предприятие" AS name,
                    e."ЮрАдрес" AS address_text,
-                   edo_id(e."ИНН", e."КПП") as buyer_edo_id
+                   edo_id(%s, e."ИНН", e."КПП") as buyer_edo_id
             FROM arc_energo."Предприятия" e
             WHERE e."Код" = %s
             """,
-            (bill_info["buyer_id"],)
+            (self.edo_prefix, bill_info["buyer_id"],)
         )
         if not buyer_raw:
             raise ValueError(f"Покупатель с кодом {bill_info['buyer_id']} не найден")
@@ -482,14 +485,17 @@ class DataExtractor:
         # Собираем структуру данных
         # --- Получение адреса продавца ---
         seller_address = None
-        if bill_info["seller_id"]:
-            seller_address = self._get_address_from_gran_address(bill_info["seller_id"])
+        if seller_raw["ogrn"]:
+            seller_address = self._get_address_from_gran_address(seller_raw["ogrn"])
 
-        buyer_address = AddressRF(
-            # postal_code=buyer_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
-            region_code=buyer_raw["inn"][:2],  # первые два символа из ИНН
-            region_name=REGIONS_RU.get(buyer_raw["inn"][:2], 'неизвестный код региона')
-        )
+        if buyer_raw["ogrn"]:
+            buyer_address = self._get_address_from_gran_address(buyer_raw["ogrn"])
+
+        # buyer_address = AddressRF(
+        #     # postal_code=buyer_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
+        #     region_code=buyer_raw["inn"][:2],  # первые два символа из ИНН
+        #     region_name=REGIONS_RU.get(buyer_raw["inn"][:2], 'неизвестный код региона')
+        # )
 
         seller = Seller(
             name=seller_raw["name"],
@@ -506,6 +512,7 @@ class DataExtractor:
             name=buyer_raw["name"],
             inn=buyer_raw["inn"],
             kpp=buyer_raw.get("kpp", ""),
+            ogrn=buyer_raw.get("ogrn", ""),
             address=buyer_address,
             buyer_edo_id=buyer_raw.get("buyer_edo_id"),
         )
@@ -542,13 +549,18 @@ class DataExtractor:
             except ValueError:
                 vat_rate_num = 0.22
             price_with_vat = float(row["price_with_vat"]) if row["price_with_vat"] else 0.0
+            price_without_vat = round(price_with_vat /
+                                      (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat, 2)
             quantity = float(row["quantity"]) if row["quantity"] else 0.0
-            total_with_vat = price_with_vat * quantity
-            total_without_vat = total_with_vat / \
-                (1 + vat_rate_num) if vat_rate_num != 0 else total_with_vat
+
+            total_without_vat = price_without_vat * quantity
+            total_with_vat = round(total_without_vat * (1 + vat_rate_num), 2)
             vat_amount = total_with_vat - total_without_vat
-            price_without_vat = price_with_vat / \
-                (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat
+
+            # total_with_vat = price_with_vat * quantity
+            # total_without_vat = total_with_vat / \
+            #     (1 + vat_rate_num) if vat_rate_num != 0 else total_with_vat
+            # vat_amount = total_with_vat - total_without_vat
 
             kiz_list = []
             if row.get("kiz"):

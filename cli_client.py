@@ -65,6 +65,12 @@ def main():
         default="output",
         help="Каталог для сохранения XML-файлов",
     )
+    parser.add_argument(
+        "--edo_prefix",
+        type=str,
+        default="2LT",
+        help="для какой системы ЭДО",
+    )
 
     args = parser.parse_args()
 
@@ -77,6 +83,7 @@ def main():
         use_json=args.use_json,
         json_path=args.json_path,
         address_format=args.address_format,
+        edo_prefix=args.edo_prefix,
     )
     try:
         # bill_data = extractor.get_bill_data(args.bill_number, args.upd_number)

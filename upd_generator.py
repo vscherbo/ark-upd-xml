@@ -238,6 +238,7 @@ class UpdGenerator:
         total_without_vat = 0.0
         total_with_vat = 0.0
         total_vat = 0.0
+        total_qnt = 0.0
 
         for item in data.items:
             # СведТов
@@ -273,6 +274,7 @@ class UpdGenerator:
             total_without_vat += item.total_without_vat
             total_with_vat += item.total_with_vat
             total_vat += item.vat_amount
+            total_qnt += item.quantity
 
         # ВсегоОпл
         vsego = etree.SubElement(
@@ -280,6 +282,7 @@ class UpdGenerator:
             "ВсегоОпл",
             СтТовБезНДСВсего=f"{total_without_vat:.2f}",
             СтТовУчНалВсего=f"{total_with_vat:.2f}",
+            КолНеттоВс=f"{total_qnt:.2f}",
         )
         sum_nal_vsego = etree.SubElement(vsego, "СумНалВсего")
         etree.SubElement(sum_nal_vsego, "СумНал").text = f"{total_vat:.2f}"
