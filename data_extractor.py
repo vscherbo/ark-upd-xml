@@ -296,6 +296,12 @@ class PGManager:
             rows = cur.fetchall()
             return [dict(row) for row in rows]
 
+    def callproc(self, proc_name: str, params=None):
+        with self.get_connection() as c:
+            with c.cursor() as cur:
+                cur.callproc(proc_name, params)
+                return cur.fetchall()
+
     def close(self):
         if self._pool:
             self._pool.closeall()
@@ -519,6 +525,18 @@ class DataExtractor:
         if not buyer_raw:
             raise ValueError(f"Покупатель с кодом {bill_info['buyer_id']} не найден")
 
+        # Данные из ф-ции rep.bill_doc_details
+        bill_dets = self.pg.callproc('rep.bill_doc_details', (bill_no, 'УПД_ОСЗ',))
+        if not bill_dets:
+            raise ValueError(f"Ошибка получения информации для документа по счёту {bill_no}")
+        logger.debug('bill_dets=%s', bill_dets)
+
+        basis_doc_name = None
+        if bill_dets[0]['dogovor']:
+            basis_doc_name = bill_dets[0]['dogovor']
+        else:
+            basis_doc_name = "Договор продажи"
+
         # Собираем структуру данных
         # --- Получение адреса продавца ---
         seller_address = None
@@ -678,7 +696,7 @@ class DataExtractor:
             # основании отгрузки или Договор  или счет, возможно еще оплаченная спецификация:
             # по  дилерам точно договор .  по  разовым покупателям чаще счет .
             # Номер и Дата -   это  дата договора/ счета /спецификации.
-            basis_doc_name="Договор продажи",
+            basis_doc_name=basis_doc_name,
             basis_doc_number=f'{seller.prefix} \
 {bill_info["bill_number"][:4]}-{bill_info["bill_number"][4:]}',
             basis_doc_date=bill_info["bill_date"],  # adjust???
