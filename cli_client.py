@@ -86,10 +86,10 @@ def main():
         edo_prefix=args.edo_prefix,
     )
     try:
-        # bill_data = extractor.get_bill_data(args.bill_number, args.upd_number)
         bill_data = extractor.get_bill_data(args.bill_number)
     except Exception as e:
-        logger.error("Ошибка извлечения данных: %s", e)
+        # logger.error("Ошибка извлечения данных: %s", e)
+        logger.exception("Ошибка извлечения данных")
         sys.exit(1)
 
     logger.info("Данные извлечены, количество позиций в счёте: %s", len(bill_data.items))
