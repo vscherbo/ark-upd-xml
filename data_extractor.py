@@ -29,6 +29,8 @@ import psycopg2.pool
 from psycopg2 import sql
 from psycopg2.extras import LoggingConnection, LoggingCursor
 
+import save_address
+import suggest_party
 from db_mapping import (AddressGAR, AddressRF, Bank, BillData, BillItem, Buyer,
                         NomerTip, Seller, Signer, Tax, TipNaim, VidNaim,
                         VidNaimKod)
@@ -332,6 +334,40 @@ class DataExtractor:
             return self._load_from_json(bill_no, 'HARD-1234')
         return self._load_from_db(bill_no)
 
+    def get_address(self, query: str) -> int:
+        # 1. Ключ DaData
+        try:
+            # api_key = suggest_party.load_api_key(args.dadata_conf)
+            # api_key = suggest_party.load_api_key('dadata.conf')
+            api_key = suggest_party.load_api_key()
+        except (FileNotFoundError, KeyError) as exc:
+            logging.error('Не удалось загрузить API-ключ DaData: %s', exc)
+            return 1
+
+        # 2. Запрос — получаем сразу dict
+        try:
+            response = suggest_party.suggest(query, 'party', api_key)
+        except Exception as exc:
+            logging.error('Ошибка запроса DaData: %s', exc)
+            return 1
+
+        # 3. Конфиг БД (без пароля — пароль из ~/.pgpass)
+        try:
+            db_config = save_address.DBConfig.from_ini()
+        except Exception as exc:
+            logging.error('Не удалось загрузить конфигурацию БД: %s', exc)
+            return 1
+
+        # 4. Сохранение — передаём ответ как объект, без JSON и без stdin
+        try:
+            inserted = save_address.save_response(response, db_config)
+        except Exception as exc:
+            logging.error('Ошибка сохранения в БД: %s', exc)
+            return 1
+
+        logging.info('Готово. Сохранено записей: %d', inserted)
+        return 0
+
     def _get_address_from_gran_address(self, firm_name: str) -> Optional[AddressRF]:
         """
         Получить адрес из таблицы ext.gran_address по полю "фирма".
@@ -418,12 +454,13 @@ class DataExtractor:
                    bc."КодОКЕИ"::text AS mes_code,
                    bc."Ед Изм" AS mes_unit,
                    bc."ЦенаНДС" AS price_with_vat,
-                   em.mark AS kiz
+                   -- em.mark AS kiz
+                   (SELECT string_agg(mark, '^') FROM arc_energo.entering_marked em
+                   WHERE em."КодОтгрузки" = r."КодОтгрузки") AS kiz
             FROM arc_energo."Содержание счета" bc
             LEFT JOIN arc_energo."Расход" r
                 ON r."Счет" = bc."№ счета" AND bc."КодПозиции" = r."КодПозиции"
-            LEFT JOIN arc_energo.entering_marked em
-                ON em."КодОтгрузки" = r."КодОтгрузки"
+            -- LEFT JOIN arc_energo.entering_marked em ON em."КодОтгрузки" = r."КодОтгрузки"
             WHERE bc."№ счета" = %s
             ORDER BY bc."ПозицияСчета"
             """,
@@ -488,8 +525,18 @@ class DataExtractor:
         if seller_raw["ogrn"]:
             seller_address = self._get_address_from_gran_address(seller_raw["ogrn"])
 
+        # Беларусь!???
         if buyer_raw["ogrn"]:
             buyer_address = self._get_address_from_gran_address(buyer_raw["ogrn"])
+            logger.debug('1st try. buyer_address=%s', str(buyer_address))
+            if not buyer_address:
+                logger.debug('Try to download an address from dadata.ru')
+                # get from dadata and save to PG
+                if self.get_address(buyer_raw["ogrn"]) == 0:
+                    logger.debug('an address was downloaded from dadata.ru')
+                    buyer_address = self._get_address_from_gran_address(buyer_raw["ogrn"])
+                else:
+                    logger.error('Cannot get buyer_address')
 
         # buyer_address = AddressRF(
         #     # postal_code=buyer_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
@@ -549,12 +596,15 @@ class DataExtractor:
             except ValueError:
                 vat_rate_num = 0.22
             price_with_vat = float(row["price_with_vat"]) if row["price_with_vat"] else 0.0
-            price_without_vat = round(price_with_vat /
-                                      (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat, 2)
+            # price_without_vat = round(price_with_vat /
+            #                        (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat, 2)
+            price_without_vat = price_with_vat / \
+                (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat
             quantity = float(row["quantity"]) if row["quantity"] else 0.0
 
             total_without_vat = price_without_vat * quantity
-            total_with_vat = round(total_without_vat * (1 + vat_rate_num), 2)
+            # total_with_vat = round(total_without_vat * (1 + vat_rate_num), 2)
+            total_with_vat = total_without_vat * (1 + vat_rate_num)
             vat_amount = total_with_vat - total_without_vat
 
             # total_with_vat = price_with_vat * quantity
@@ -564,7 +614,8 @@ class DataExtractor:
 
             kiz_list = []
             if row.get("kiz"):
-                kiz_list.append(row["kiz"])
+                kiz_list = row.get("kiz").split('^')
+                # kiz_list.append(row["kiz"])
 
             items.append(
                 BillItem(
@@ -573,8 +624,8 @@ class DataExtractor:
                     okei_code=str(row.get("mes_code", "796")).zfill(3),
                     okei_name=row.get("mes_unit", "шт"),
                     quantity=quantity,
-                    price_without_vat=price_without_vat,
-                    total_without_vat=total_without_vat,
+                    price_without_vat=round(price_without_vat, 2),
+                    total_without_vat=round(total_without_vat, 2),
                     vat_rate=vat_rate_str,
                     vat_amount=vat_amount,
                     total_with_vat=total_with_vat,
@@ -624,8 +675,9 @@ class DataExtractor:
             items=items,
             payment_doc_number=str(bill_info["payment_doc_number"]),
             payment_doc_date=bill_info["payment_doc_date"],
-            # basis_doc_name="Договор продажи",
-            # basis_doc_number="КИП4828",
+            # основании отгрузки или Договор  или счет, возможно еще оплаченная спецификация:
+            # по  дилерам точно договор .  по  разовым покупателям чаще счет .
+            # Номер и Дата -   это  дата договора/ счета /спецификации.
             basis_doc_name="Договор продажи",
             basis_doc_number=f'{seller.prefix} \
 {bill_info["bill_number"][:4]}-{bill_info["bill_number"][4:]}',
