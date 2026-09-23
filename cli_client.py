@@ -12,7 +12,7 @@ from data_extractor import DataExtractor
 from filename_generator import FilenameGenerator
 from upd_generator import UpdGenerator
 
-LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)20s()] \
+LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)-20s()] \
             %(levelname)-7s | %(asctime)-15s | %(message)s'
 
 # logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
@@ -117,7 +117,8 @@ def main():
         generator.generate_and_save(bill_data, output_path)
         logger.info("УПД успешно сгенерирован: %s", output_path)
     except Exception as e:
-        logger.error("Ошибка генерации УПД: %s", e)
+        # logger.error("Ошибка генерации УПД: %s", e)
+        logger.exception("Ошибка генерации УПД")
         sys.exit(1)
 
 
