@@ -4,6 +4,13 @@ data_extractor.py - Извлечение данных для УПД из Postgre
 Использует LoggingConnection для логирования запросов.
 Поддерживает .pgpass для аутентификации.
 
+Основной источник данных — функция rep.bill_doc_details_j(bill_no, 'ЭДО'),
+возвращающая jsonb. Позиции счёта извлекаются отдельным запросом, так как
+функция их не возвращает.
+
+Адреса продавца/покупателя берутся из таблицы ext.gran_address по ОГРН,
+для покупателя при отсутствии — запрос в DaData с сохранением в БД.
+
 _load_from_db()
 Адрес продавца/покупателя заполняется частично (регион из ИНН, название региона и улица – константы).
 --- Даты (основание, передача) установлены фиксированными (2026-08-10, 2026-08-14).
@@ -18,10 +25,11 @@ Signer: auth_method="1",  # по умолчанию без довереннос�
 import json
 import logging
 import os
+import re
 import uuid
 from contextlib import contextmanager
-from datetime import date
-from typing import Any, Dict, List, Optional, Union
+from datetime import date, datetime
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import psycopg2
 import psycopg2.extras
@@ -32,8 +40,8 @@ from psycopg2.extras import LoggingConnection, LoggingCursor
 import save_address
 import suggest_party
 from db_mapping import (AddressGAR, AddressRF, Bank, BillData, BillItem, Buyer,
-                        NomerTip, Seller, Signer, Tax, TipNaim, VidNaim,
-                        VidNaimKod)
+                        NomerTip, PaymentDoc, Seller, Signer, Tax, TipNaim,
+                        VidNaim, VidNaimKod)
 
 REGIONS_RU = {
     "01": "Республика Адыгея",
@@ -123,6 +131,12 @@ REGIONS_RU = {
     "92": "Севастополь"
 }
 
+FACT_HOUSING_NAME = (
+    "ДОКУМЕНТ об отгрузке товаров (выполнении работ), передаче "
+    "имущественных прав (документ об оказании услуг)"
+)
+DOC_NAME_OPERATOR = "Универсальный передаточный документ"
+
 """
 Автоматика: 2LT-11001972830
 АРКОМ: 2LT-11004384984
@@ -140,6 +154,72 @@ REGIONS_RU = {
 
 
 logger = logging.getLogger(__name__)
+
+# ======================================================================
+# Вспомогательные парсеры
+# ======================================================================
+
+
+def _parse_date(value: Any) -> Optional[date]:
+    """Преобразует строку ISO или date в date, иначе None."""
+    if value is None:
+        return None
+    if isinstance(value, date):
+        return value
+    s = str(value).strip()
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        try:
+            return datetime.strptime(s, "%d.%m.%Y").date()
+        except ValueError:
+            logger.warning("Не удалось разобрать дату: %r", value)
+            return None
+
+
+def _parse_fio(fio: str) -> Tuple[str, str, str]:
+    """
+    Разбирает строку вида "Иванов И.И." в (Фамилия, Имя, Отчество).
+    Возвращает пустые строки, если части не найдены.
+    """
+    if not fio:
+        return "", "", ""
+    parts = fio.strip().split()
+    last = parts[0] if len(parts) > 0 else ""
+    first = parts[1] if len(parts) > 1 else ""
+    middle = parts[2] if len(parts) > 2 else ""
+    return last, first, middle
+
+
+_ATTORNEY_DATE_RE = re.compile(r"(\d{2}\.\d{2}\.\d{4})")
+
+
+def _parse_attorney(raw: str) -> Tuple[Optional[str], Optional[date]]:
+    """
+    Разбирает строку доверенности (формат заранее неизвестен):
+    пробует найти дату DD.MM.YYYY, всё остальное считает номером.
+    Возвращает (номер, дата).
+    """
+    if not raw:
+        return None, None
+    s = raw.strip()
+    m = _ATTORNEY_DATE_RE.search(s)
+    doc_date: Optional[date] = None
+    if m:
+        try:
+            doc_date = datetime.strptime(m.group(1), "%d.%m.%Y").date()
+        except ValueError:
+            pass
+        s = (s[:m.start()] + s[m.end():]).strip()
+    # Убираем типовые префиксы/разделители
+    s = s.strip(" ,;№#")
+    return (s or None), doc_date
+
+# ======================================================================
+# Курсор и менеджер подключений
+# ======================================================================
 
 
 class LoggingResultCursor(psycopg2.extras.RealDictCursor):
@@ -302,6 +382,17 @@ class PGManager:
                 cur.callproc(proc_name, params)
                 return cur.fetchall()
 
+    def fetch_function_json(self, func_sql: str, params: tuple) -> Optional[dict]:
+        """
+        Вызывает SQL-функцию, возвращающую jsonb, и возвращает её результат
+        как Python-объект (dict/list). Пример:
+            fetch_function_json("rep.bill_doc_details_j(%s, %s)", (bill_no, 'ЭДО'))
+        """
+        row = self.fetch_one(f"SELECT {func_sql} AS j", params)
+        if not row:
+            return None
+        return row.get("j")
+
     def close(self):
         if self._pool:
             self._pool.closeall()
@@ -314,97 +405,85 @@ class PGManager:
         self.close()
 
 
-class DataExtractor:
-    """
-    Извлекает данные для УПД из БД или из JSON-файла.
-    """
+# ======================================================================
+# DataExtractor
+# ======================================================================
 
-    def __init__(self, use_json: bool = False, json_path: str = "sample_data.json",
-                 address_format: str = "rf", edo_prefix: str = 'edo_lite'):
-        """
-        Args:
-            use_json: Если True, читать из JSON вместо БД.
-            json_path: Путь к JSON-файлу с данными.
-        """
+class DataExtractor:
+    """Извлекает данные для УПД из БД или из JSON-файла."""
+
+    def __init__(
+        self,
+        use_json: bool = False,
+        json_path: str = "sample_data.json",
+        address_format: str = "rf",
+        edo_prefix: str = "2LT",
+    ):
         self.use_json = use_json
         self.json_path = json_path
         self.address_format = address_format
         self.edo_prefix = edo_prefix
         self.pg = PGManager() if not use_json else None
 
+    # ------------------------------------------------------------------
+    # Публичный API
+    # ------------------------------------------------------------------
     def get_bill_data(self, bill_no: int) -> BillData:
-        """
-        Получить все данные для генерации УПД по номеру счёта.
-        """
         if self.use_json:
-            return self._load_from_json(bill_no, 'HARD-1234')
+            return self._load_from_json(bill_no, "HARD-1234")
         return self._load_from_db(bill_no)
 
+    # ------------------------------------------------------------------
+    # Адрес из DaData (для покупателя)
+    # ------------------------------------------------------------------
     def get_address(self, query: str) -> int:
-        # 1. Ключ DaData
         try:
-            # api_key = suggest_party.load_api_key(args.dadata_conf)
-            # api_key = suggest_party.load_api_key('dadata.conf')
             api_key = suggest_party.load_api_key()
         except (FileNotFoundError, KeyError) as exc:
-            logging.error('Не удалось загрузить API-ключ DaData: %s', exc)
+            logger.error("Не удалось загрузить API-ключ DaData: %s", exc)
             return 1
 
-        # 2. Запрос — получаем сразу dict
         try:
-            response = suggest_party.suggest(query, 'party', api_key)
+            response = suggest_party.suggest(query, "party", api_key)
         except Exception as exc:
-            logging.error('Ошибка запроса DaData: %s', exc)
+            logger.exception("Ошибка запроса DaData: %s", exc)
             return 1
 
-        # 3. Конфиг БД (без пароля — пароль из ~/.pgpass)
         try:
             db_config = save_address.DBConfig.from_ini()
         except Exception as exc:
-            logging.error('Не удалось загрузить конфигурацию БД: %s', exc)
+            logger.exception("Не удалось загрузить конфигурацию БД: %s", exc)
             return 1
 
-        # 4. Сохранение — передаём ответ как объект, без JSON и без stdin
         try:
             inserted = save_address.save_response(response, db_config)
         except Exception as exc:
-            logging.error('Ошибка сохранения в БД: %s', exc)
+            logger.exception("Ошибка сохранения в БД: %s", exc)
             return 1
 
-        logging.info('Готово. Сохранено записей: %d', inserted)
+        logger.info("Адрес из DaData сохранён, записей: %d", inserted)
         return 0
 
-    def _get_address_from_gran_address(self, firm_name: str) -> Optional[AddressRF]:
-        """
-        Получить адрес из таблицы ext.gran_address по полю "фирма".
-        Возвращает объект AddressRF или None, если запись не найдена.
-        """
-        if not firm_name:
+    # ------------------------------------------------------------------
+    # Адрес из ext.gran_address
+    # ------------------------------------------------------------------
+    def _get_address_from_gran_address(self, ogrn: str) -> Optional[AddressRF]:
+        """Возвращает AddressRF из ext.gran_address по ОГРН или None."""
+        if not ogrn:
             return None
         row = self.pg.fetch_one(
             """
-            SELECT
-                postal_code,
-                region,
-                region_kladr_id,
-                city_district,
-                city,
-                settlement,
-                street,
-                house,
-                block,
-                flat,
-                ogrn
+            SELECT postal_code, region, region_kladr_id, city_district,
+                   city, settlement, street, house, block, flat, ogrn
             FROM ext.gran_address
             WHERE ogrn = %s
             """,
-            (firm_name,)
+            (ogrn,),
         )
         if not row:
-            logger.warning("Адрес для фирмы '%s' не найден в gran_address", firm_name)
+            logger.warning("Адрес для ОГРН '%s' не найден в gran_address", ogrn)
             return None
 
-        # Код региона: первые 2 цифры из region_kladr_id (например, "78")
         region_code = ""
         if row.get("region_kladr_id") and len(row["region_kladr_id"]) >= 2:
             region_code = row["region_kladr_id"][:2]
@@ -422,265 +501,320 @@ class DataExtractor:
             apartment=row.get("flat"),
         )
 
+    # ------------------------------------------------------------------
+    # Основной метод: извлечение из БД
+    # ------------------------------------------------------------------
     def _load_from_db(self, bill_no: int) -> BillData:
-        """Извлечение из PostgreSQL."""
-        # Получаем основную информацию о счёте
-        bill_info = self.pg.fetch_one(
-            """
-            SELECT "№ счета"::varchar AS bill_number,
-                   "Дата счета" AS bill_date,
-                   "фирма" AS seller_id,
-                   "Накладная" as nakl,
-                   "Фактура" as factura,
-                   "№ Фактуры"::varchar as nom_factura,
-                   "№АвансФактуры" as nom_avans,
-                   "ДатаАвансФактуры" as data_avans,
-                   "Сдача" as ready_date,
-                   "ППномер" as pp_nomer,
-                   "ПП№" as payment_doc_number,
-                   p."ДатаПП" as payment_doc_date,
-                   "Код" AS buyer_id
-            FROM arc_energo."Счета"
-            JOIN arc_energo."ОплатыНТУ" p ON p."Счет" = "№ счета"
-            WHERE "№ счета" = %s
-            """,
-            (bill_no,)
+        # ------------------------------------------------------------------
+        # 1. Основные данные — из функции bill_doc_details_j
+        # ------------------------------------------------------------------
+        logger.info("Вызываем rep.bill_doc_details_j(%s, 'ЭДО')", bill_no)
+        j = self.pg.fetch_function_json(
+            "rep.bill_doc_details_j(%s, %s)", (bill_no, "ЭДО")
         )
-        if not bill_info:
-            raise ValueError(f"Счёт {bill_no} не найден")
+        if not j:
+            raise ValueError(
+                f"Функция bill_doc_details_j не вернула данные для счёта {bill_no}"
+            )
 
-        # Получаем строки счёта
+        document = j.get("document") or {}
+        seller_j = j.get("seller") or {}
+        buyer_j = j.get("buyer") or {}
+        consignee = j.get("consignee") or {}
+        signatures = j.get("signatures") or {}
+        contracts = j.get("contracts") or {}
+
+        logger.debug("document=%s", document)
+        logger.debug("signatures=%s", signatures)
+        logger.debug("contracts=%s", contracts)
+        logger.debug("consignee=%s", consignee)
+
+        # ------------------------------------------------------------------
+        # 2. Позиции счёта — отдельным запросом
+        # ------------------------------------------------------------------
         items_raw = self.pg.fetch_all(
             """
             SELECT ROW_NUMBER() OVER (ORDER BY bc."ПозицияСчета" ASC) AS row_num,
-                   -- bc."ПозицияСчета" AS row_num,
                    bc."КодСодержания" AS article,
-                   bc."Наименование" AS item_name,
-                   r."Отгружено" AS quantity,
-                   bc."КодОКЕИ"::text AS mes_code,
-                   bc."Ед Изм" AS mes_unit,
-                   bc."ЦенаНДС" AS price_with_vat,
-                   -- em.mark AS kiz
-                   (SELECT string_agg(mark, '^') FROM arc_energo.entering_marked em
-                   WHERE em."КодОтгрузки" = r."КодОтгрузки") AS kiz
+                   bc."Наименование"   AS item_name,
+                   r."Отгружено"       AS quantity,
+                   bc."КодОКЕИ"::text  AS mes_code,
+                   bc."Ед Изм"         AS mes_unit,
+                   bc."ЦенаНДС"        AS price_with_vat,
+                   (SELECT string_agg(mark, '^')
+                      FROM arc_energo.entering_marked em
+                     WHERE em."КодОтгрузки" = r."КодОтгрузки") AS kiz
             FROM arc_energo."Содержание счета" bc
             LEFT JOIN arc_energo."Расход" r
-                ON r."Счет" = bc."№ счета" AND bc."КодПозиции" = r."КодПозиции"
-            -- LEFT JOIN arc_energo.entering_marked em ON em."КодОтгрузки" = r."КодОтгрузки"
+                   ON r."Счет" = bc."№ счета" AND bc."КодПозиции" = r."КодПозиции"
             WHERE bc."№ счета" = %s
             ORDER BY bc."ПозицияСчета"
             """,
-            (bill_no,)
+            (bill_no,),
         )
+        logger.info("Найдено %d позиций", len(items_raw))
 
-        # Получаем продавца
-        seller_raw = self.pg.fetch_one(
-            """
-            SELECT
-                f."Ф_ИНН" AS inn,
-                fr."Ф_КПП" AS kpp,
-                f."Название" AS name,
-                f."ПрефиксВСчет" AS prefix,
-                fr."Ф_ЮрАдрес" AS address_text,
-                fr."Ф_ОКПО" AS okpo,
-                f."Ф_ОГРН" AS ogrn,
-                fr."Ф_Банк" AS bank_name,
-                fr."Ф_БИК" AS bic,
-                fr."Ф_РассчетныйСчет" AS account,
-                fr."Ф_КоррСчет" AS corr_account,
-                vat_rate(b."фирма", b."Код", b."Дата счета"::date) || '%%' AS vat_rate,
-                fs.signer_position,
-                fs.signer_fio,
-                edo_id(%s, f."Ф_ИНН", fr."Ф_КПП") AS seller_edo_id
-            FROM arc_energo."Счета" b
-            JOIN arc_energo."ФирмаРеквизиты" fr
-                ON fr."КодРеквизитовФирмы" = b."КодРеквизитовФирмы"
-            JOIN arc_energo."Фирма" f
-                ON fr."КодФирмы" = f."КлючФирмы"
-            LEFT JOIN LATERAL (
-                SELECT signer_fio, signer_position
-                FROM arc_energo.firm_signer(f."КлючФирмы", 'УПД_ОСЗ')
-            ) AS fs ON true
-            WHERE b."№ счета" = %s
-            """,
-            (self.edo_prefix, bill_no,)
-        )
-        if not seller_raw:
-            raise ValueError(f"Продавец для счёта {bill_no} не найден")
+        # ------------------------------------------------------------------
+        # 3. Адреса
+        # ------------------------------------------------------------------
+        seller_address: Optional[AddressRF] = None
+        if seller_j.get("ogrn"):
+            seller_address = self._get_address_from_gran_address(seller_j["ogrn"])
+            if not seller_address:
+                logger.warning(
+                    "Адрес продавца (ОГРН %s) не найден в gran_address",
+                    seller_j["ogrn"],
+                )
 
-        # Получаем покупателя
-        buyer_raw = self.pg.fetch_one(
-            """
-            SELECT e."ИНН" AS inn,
-                   e."КПП" AS kpp,
-                   e."ОГРН" AS ogrn,
-                   e."Предприятие" AS name,
-                   e."ЮрАдрес" AS address_text,
-                   edo_id(%s, e."ИНН", e."КПП") as buyer_edo_id
-            FROM arc_energo."Предприятия" e
-            WHERE e."Код" = %s
-            """,
-            (self.edo_prefix, bill_info["buyer_id"],)
-        )
-        if not buyer_raw:
-            raise ValueError(f"Покупатель с кодом {bill_info['buyer_id']} не найден")
-
-        # Данные из ф-ции rep.bill_doc_details
-        bill_dets = self.pg.callproc('rep.bill_doc_details', (bill_no, 'УПД_ОСЗ',))
-        if not bill_dets:
-            raise ValueError(f"Ошибка получения информации для документа по счёту {bill_no}")
-        logger.debug('bill_dets=%s', bill_dets)
-
-        basis_doc_name = None
-        if bill_dets[0]['dogovor']:
-            basis_doc_name = bill_dets[0]['dogovor']
-        else:
-            basis_doc_name = "Договор продажи"
-
-        # Собираем структуру данных
-        # --- Получение адреса продавца ---
-        seller_address = None
-        if seller_raw["ogrn"]:
-            seller_address = self._get_address_from_gran_address(seller_raw["ogrn"])
-
-        # Беларусь!???
-        if buyer_raw["ogrn"]:
-            buyer_address = self._get_address_from_gran_address(buyer_raw["ogrn"])
-            logger.debug('1st try. buyer_address=%s', str(buyer_address))
+        buyer_address: Optional[AddressRF] = None
+        if buyer_j.get("ogrn"):
+            buyer_address = self._get_address_from_gran_address(buyer_j["ogrn"])
             if not buyer_address:
-                logger.debug('Try to download an address from dadata.ru')
-                # get from dadata and save to PG
-                if self.get_address(buyer_raw["ogrn"]) == 0:
-                    logger.debug('an address was downloaded from dadata.ru')
-                    buyer_address = self._get_address_from_gran_address(buyer_raw["ogrn"])
-                else:
-                    logger.error('Cannot get buyer_address')
+                logger.debug(
+                    "Адрес покупателя (ОГРН %s) не найден, запрашиваем DaData",
+                    buyer_j["ogrn"],
+                )
+                if self.get_address(buyer_j["ogrn"]) == 0:
+                    buyer_address = self._get_address_from_gran_address(buyer_j["ogrn"])
 
-        # buyer_address = AddressRF(
-        #     # postal_code=buyer_raw["address_text"][:6],  # первые 6 символов из ЮрАдреса
-        #     region_code=buyer_raw["inn"][:2],  # первые два символа из ИНН
-        #     region_name=REGIONS_RU.get(buyer_raw["inn"][:2], 'неизвестный код региона')
-        # )
+        # ------------------------------------------------------------------
+        # 4. Продавец
+        # ------------------------------------------------------------------
+        seller_inn = seller_j.get("inn", "") or ""
+        seller_kpp = seller_j.get("kpp", "") or ""
+        seller_edo_id = self.pg.callproc('arc_energo.edo_id', (self.edo_prefix, seller_inn,
+                                                               seller_kpp,))
+        if not seller_edo_id:
+            raise ValueError(
+                f'Не удалось получить seller_edo_id для ИНН={seller.inn}, КПП={seller.kpp}')
 
         seller = Seller(
-            name=seller_raw["name"],
-            inn=seller_raw["inn"],
-            kpp=seller_raw["kpp"],
-            ogrn=seller_raw.get("ogrn"),
-            okpo=seller_raw.get("okpo"),
-            prefix=seller_raw.get("prefix"),
-            seller_edo_id=seller_raw.get("seller_edo_id"),
+            name=seller_j.get("legal_name", "") or "",
+            # inn=seller_j.get("inn", "") or "",
+            # kpp=seller_j.get("kpp", "") or "",
+            inn=seller_inn,
+            kpp=seller_kpp,
+            ogrn=seller_j.get("ogrn"),
+            okpo=seller_j.get("okpo"),
+            prefix=document.get("prefix"),
             address=seller_address,
+            edo_id=seller_edo_id[0]['edo_id']
         )
 
-        buyer = Buyer(
-            name=buyer_raw["name"],
-            inn=buyer_raw["inn"],
-            kpp=buyer_raw.get("kpp", ""),
-            ogrn=buyer_raw.get("ogrn", ""),
-            address=buyer_address,
-            buyer_edo_id=buyer_raw.get("buyer_edo_id"),
-        )
+        # ------------------------------------------------------------------
+        # 5. Покупатель
+        # ------------------------------------------------------------------
+        is_worker = bool(buyer_j.get("is_worker"))
+        if is_worker:
+            # TODO: реализовать ветку СвФЛУч для покупателя-физлица
+            logger.warning(
+                "Покупатель — физлицо (worker_fio=%s). Ветка СвФЛУч пока не реализована.",
+                buyer_j.get("worker_fio"),
+            )
+            buyer = Buyer(
+                name=buyer_j.get("worker_fio", "") or "",
+                inn="",
+                kpp="",
+                ogrn="",
+                address=buyer_address,
+            )
+        else:
+            buyer_inn = buyer_j.get("inn", "") or ""
+            buyer_kpp = buyer_j.get("kpp", "") or ""
+            buyer_edo_id = self.pg.callproc('arc_energo.edo_id', (self.edo_prefix, buyer_inn,
+                                                                  buyer_kpp,))
+            if not buyer_edo_id:
+                raise ValueError(
+                    f'Не удалось получить buyer_edo_id для ИНН={buyer.inn}, КПП={buyer.kpp}')
 
+            buyer = Buyer(
+                name=buyer_j.get("legal_name", "") or "",
+                # inn=buyer_j.get("inn", "") or "",
+                # kpp=buyer_j.get("kpp", "") or "",
+                inn=buyer_inn,
+                kpp=buyer_kpp,
+                ogrn=buyer_j.get("ogrn", "") or "",
+                address=buyer_address,
+                edo_id=buyer_edo_id[0]['edo_id']
+            )
+
+        # ------------------------------------------------------------------
+        # 6. Банк продавца
+        # ------------------------------------------------------------------
         bank = Bank(
-            bank_name=seller_raw.get("bank_name", ""),
-            bik=seller_raw.get("bic", ""),
-            account=seller_raw.get("account", ""),
-            corr_account=seller_raw.get("corr_account"),
+            bank_name=seller_j.get("bank", "") or "",
+            bik=seller_j.get("bik", "") or "",
+            account=seller_j.get("rs", "") or "",
+            corr_account=None,  # в JSON нет к/с продавца
         )
 
-        tax = Tax(vat_rate=seller_raw.get("vat_rate", "22%"))
+        # ------------------------------------------------------------------
+        # 7. Ставка НДС
+        # ------------------------------------------------------------------
+        vat_rate_raw = document.get("vat_rate")
+        vat_rate_str = f"{vat_rate_raw}%" if vat_rate_raw is not None else "22%"
+        tax = Tax(vat_rate=vat_rate_str)
 
-        # Разбираем ФИО подписанта (ожидается строка "Фамилия Имя Отчество")
-        signer_fio = seller_raw.get("signer_fio", "")
-        fio_parts = signer_fio.split()
-        signer = Signer(
-            last_name=fio_parts[0] if len(fio_parts) > 0 else "",
-            first_name=fio_parts[1] if len(fio_parts) > 1 else "",
-            middle_name=fio_parts[2] if len(fio_parts) > 2 else None,
-            position=seller_raw.get("signer_position", ""),
-            auth_method="1",  # по умолчанию без доверенности
+        # ------------------------------------------------------------------
+        # 8. Подписанты (директор + бухгалтер, если есть)
+        # ------------------------------------------------------------------
+        signers: List[Signer] = []
+
+        # 8.1 Директор
+        last, first, middle = _parse_fio(signatures.get("director") or "")
+        director_signer = Signer(
+            last_name=last or "—",     # XSD требует minLength=1
+            first_name=first or "—",
+            middle_name=middle or None,
+            position=signatures.get("position") or None,
+            auth_method="1",
         )
+        attorney_dir = signatures.get("attorney_director")
+        if attorney_dir:
+            doc_num, doc_date = _parse_attorney(attorney_dir)
+            # TODO: уточнить, всегда ли бумажная доверенность (auth_method="5"),
+            #       или возможна МЧД (auth_method="3" + СвДоверЭл).
+            director_signer.auth_method = "5"
+            director_signer.paper_doc_number = doc_num
+            director_signer.paper_doc_date = doc_date
+        signers.append(director_signer)
 
-        # Преобразуем строки товаров
-        items = []
+        # 8.2 Бухгалтер (если ФИО непустое)
+        accountant_fio = (signatures.get("accountant") or "").strip()
+        if accountant_fio:
+            a_last, a_first, a_middle = _parse_fio(accountant_fio)
+            accountant_signer = Signer(
+                last_name=a_last or "—",
+                first_name=a_first or "—",
+                middle_name=a_middle or None,
+                # TODO: уточнить должность бухгалтера (в bill_doc_details_j её нет)
+                # position="Главный бухгалтер",
+                # Пока, как для "директора"
+                position=signatures.get("position") or None,
+                auth_method="1",
+            )
+            attorney_acc = signatures.get("attorney_accountant")
+            if attorney_acc:
+                doc_num, doc_date = _parse_attorney(attorney_acc)
+                accountant_signer.auth_method = "5"
+                accountant_signer.paper_doc_number = doc_num
+                accountant_signer.paper_doc_date = doc_date
+            signers.append(accountant_signer)
+
+        # ------------------------------------------------------------------
+        # 9. Позиции счёта
+        # ------------------------------------------------------------------
+        try:
+            vat_rate_num = float(vat_rate_str.replace("%", "")) / 100.0
+        except ValueError:
+            vat_rate_num = 0.22
+
+        items: List[BillItem] = []
         for row in items_raw:
-            # Вычисляем цену без НДС из цены с НДС и ставки
-            # Для простоты возьмём ставку из seller_raw (одинаковая для всех товаров)
-            vat_rate_str = seller_raw.get("vat_rate", "22%")
-            # Преобразуем "22%" в 0.22 для вычислений
-            try:
-                vat_rate_num = float(vat_rate_str.replace("%", "")) / 100.0
-            except ValueError:
-                vat_rate_num = 0.22
             price_with_vat = float(row["price_with_vat"]) if row["price_with_vat"] else 0.0
-            # price_without_vat = round(price_with_vat /
-            #                        (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat, 2)
-            price_without_vat = price_with_vat / \
-                (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat
+            price_without_vat = (
+                price_with_vat / (1 + vat_rate_num) if vat_rate_num != 0 else price_with_vat
+            )
             quantity = float(row["quantity"]) if row["quantity"] else 0.0
-
             total_without_vat = price_without_vat * quantity
-            # total_with_vat = round(total_without_vat * (1 + vat_rate_num), 2)
             total_with_vat = total_without_vat * (1 + vat_rate_num)
             vat_amount = total_with_vat - total_without_vat
 
-            # total_with_vat = price_with_vat * quantity
-            # total_without_vat = total_with_vat / \
-            #     (1 + vat_rate_num) if vat_rate_num != 0 else total_with_vat
-            # vat_amount = total_with_vat - total_without_vat
-
-            kiz_list = []
+            kiz_list: List[str] = []
             if row.get("kiz"):
-                kiz_list = row.get("kiz").split('^')
-                # kiz_list.append(row["kiz"])
+                kiz_list = [x for x in row["kiz"].split("^") if x]
 
             items.append(
                 BillItem(
                     row_num=row["row_num"],
                     name=row["item_name"],
                     okei_code=str(row.get("mes_code", "796")).zfill(3),
-                    okei_name=row.get("mes_unit", "шт"),
+                    okei_name=row.get("mes_unit", "шт") or "шт",
                     quantity=quantity,
                     price_without_vat=round(price_without_vat, 2),
                     total_without_vat=round(total_without_vat, 2),
                     vat_rate=vat_rate_str,
-                    vat_amount=vat_amount,
-                    total_with_vat=total_with_vat,
+                    vat_amount=round(vat_amount, 2),
+                    total_with_vat=round(total_with_vat, 2),
                     article=row.get("article"),
                     kiz_list=kiz_list,
                 )
             )
 
-        FACT_HOUSING_NAME = "ДОКУМЕНТ об отгрузке товаров (выполнении работ), передаче \
-имущественных прав (документ об оказании услуг)"
-#        DOC_NAME_OPERATOR = "СЧЕТ-ФАКТУРА и документ об отгрузке товаров (выполнении работ), \
-# передаче имущественных прав (документ об оказании услуг)"
-        DOC_NAME_OPERATOR = "Универсальный передаточный документ"
-        # Формируем BillData
-        # ???
-        # <Документ КНД="1115131" Функция="СЧФДОП" ПоФактХЖ="Документ об...
-        # ...ДатаИнфПр="19.08.2026" ВремИнфПр="15.32.51" НаимЭконСубСост="ООО
-        # ???
-        # <СвПер СодОпер="Товары переданы" ВидОпер="Продажа" ДатаПер="20.07.2026">
-        # <СвСчФакт НомерДок="63882" ДатаДок="20.07.2026">
-        # ???
-        # <СвПРД НомерПРД="254" ДатаПРД="07.07.2026"/>
-        # ???
-        # <ДокПодтвОтгрНом РеквНаимДок="Унивпереддок" РеквНомерДок="63882" РеквДатаДок="20.07.2026"/>
-        # ???
-        # <СопрДокФХЖ РеквНаимДок="АСЧФ" РеквНомерДок="А070726-1" РеквДатаДок="07.07.2026"/>
-        # >>> Номер счёта и Дата счёта:
-        # <ОснПер РеквНаимДок="Основной договор" РеквНомерДок="Счет К 4430-2613" ...
-        # ... РеквДатаДок="01.07.2026"/>
-        #
-        # Количество (всего)
-        #
+        # ------------------------------------------------------------------
+        # 10. Платёжно-расчётные документы (СвПРД)
+        # ------------------------------------------------------------------
+        payment_docs: List[PaymentDoc] = []
+        for pp in contracts.get("bill_pp_list") or []:
+            num = pp.get("prd_number")
+            d = _parse_date(pp.get("prd_date"))
+            if num and d:
+                payment_docs.append(PaymentDoc(number=str(num), date=d))
+
+        # ------------------------------------------------------------------
+        # 11. Даты и номера для шапки/передачи
+        # ------------------------------------------------------------------
+        bill_date = _parse_date(document.get("bill_date"))
+        factura_date = _parse_date(document.get("factura_date"))
+        invoice_date_raw = _parse_date(document.get("invoice_date_raw"))
+        parent_date = _parse_date(document.get("parent_date"))
+
+        # СвСчФакт/@НомерДок = COALESCE(sf_num, invoice_num_raw)
+        sv_sch_number = (
+            document.get("sf_num") or document.get("invoice_num_raw") or ""
+        )
+        sv_sch_date = factura_date or bill_date
+
+        # Дата передачи: для doc ≠ 'Счет'/'СчетФакс' — invoice_date_raw
+        transfer_date = invoice_date_raw or bill_date
+
+        # ------------------------------------------------------------------
+        # 12. Документ-подтверждение отгрузки (ДокПодтвОтгрНом)
+        # ------------------------------------------------------------------
+        dok_podtverzh_name = DOC_NAME_OPERATOR
+        dok_podtverzh_number = (
+            document.get("sf_num") or document.get("invoice_num_raw") or ""
+        )
+        dok_podtverzh_date = invoice_date_raw or sv_sch_date
+
+        # ------------------------------------------------------------------
+        # 13. Основание (ОснПер)
+        # ------------------------------------------------------------------
+        basis_from_bill = document.get("basis_from_bill")
+        if basis_from_bill:
+            basis_doc_name = basis_from_bill
+        else:
+            basis_doc_name = "Основной договор"
+
+        parent_bill = document.get("parent_bill") or bill_no
+        prefix = document.get("prefix") or ""
+        parent_bill_str = str(parent_bill)
+        if len(parent_bill_str) >= 8:
+            basis_doc_number = f"{prefix}{parent_bill_str[:4]}-{parent_bill_str[4:]}"
+        else:
+            basis_doc_number = f"{prefix}{parent_bill_str}"
+        basis_doc_date = parent_date or bill_date
+
+        # ------------------------------------------------------------------
+        # 14. ИдГосКон
+        # ------------------------------------------------------------------
+        state_contract_number = contracts.get("state_contract_number")
+        # XSD: 20..25 символов; если не подходит — не выводим
+        if state_contract_number and not (20 <= len(state_contract_number) <= 25):
+            logger.warning(
+                "ИдГосКон=%r имеет недопустимую длину, пропускаем",
+                state_contract_number,
+            )
+            state_contract_number = None
+
+        # ------------------------------------------------------------------
+        # 15. BillData
+        # ------------------------------------------------------------------
         bill_data = BillData(
-            bill_number=bill_info["bill_number"],
-            bill_date=bill_info["bill_date"],
-            upd_number=bill_info["nom_factura"],
-            upd_date=bill_info["factura"],
+            bill_number=str(bill_no),
+            bill_date=bill_date,
+            upd_number=sv_sch_number,
+            upd_date=sv_sch_date or date.today(),
             upd_file="",
             function="СЧФДОП",
             fact_housing_name=FACT_HOUSING_NAME,
@@ -689,34 +823,29 @@ class DataExtractor:
             buyer=buyer,
             bank=bank,
             tax=tax,
-            signer=signer,
+            # signer оставляем для совместимости (первый)
+            signer=signers[0] if signers else None,
+            signers=signers,
             items=items,
-            payment_doc_number=str(bill_info["payment_doc_number"]),
-            payment_doc_date=bill_info["payment_doc_date"],
-            # основании отгрузки или Договор  или счет, возможно еще оплаченная спецификация:
-            # по  дилерам точно договор .  по  разовым покупателям чаще счет .
-            # Номер и Дата -   это  дата договора/ счета /спецификации.
+            payment_docs=payment_docs,
+            state_contract_number=state_contract_number,
             basis_doc_name=basis_doc_name,
-            basis_doc_number=f'{seller.prefix} \
-{bill_info["bill_number"][:4]}-{bill_info["bill_number"][4:]}',
-            basis_doc_date=bill_info["bill_date"],  # adjust???
+            basis_doc_number=basis_doc_number,
+            basis_doc_date=basis_doc_date,
             operation_content="Товары переданы",
             operation_type="продажа",
-            transfer_date=bill_info["ready_date"],
-            transfer_start_date=bill_info["ready_date"],
-            transfer_end_date=bill_info["ready_date"],
-            # transport_info="самовывоз",
-            # incoterms="EXW",
-            # incoterms_version="2020",
+            transfer_date=transfer_date,
+            transfer_start_date=transfer_date,
+            transfer_end_date=transfer_date,
+            dok_podtverzh_name=dok_podtverzh_name,
+            dok_podtverzh_number=dok_podtverzh_number,
+            dok_podtverzh_date=dok_podtverzh_date,
         )
         return bill_data
 
+    # ------------------------------------------------------------------
     def _load_from_json(self, bill_no: int, upd_number: str) -> BillData:
-        """Загрузка из JSON-файла (для отладки)."""
         with open(self.json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # Проверим, что номер счёта совпадает (если есть поле в JSON)
-        # Можно просто вернуть данные, предварительно преобразовав в BillData
-        # Для упрощения конвертируем через Pydantic
-        data['upd_number'] = upd_number
+        data["upd_number"] = upd_number
         return BillData(**data)

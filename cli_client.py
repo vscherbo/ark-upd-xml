@@ -98,8 +98,8 @@ def main():
     # buyer_id = bill_data.buyer.inn
     # seller_id = '2LT-600072763'
     # buyer_id = '2LT-600070554'
-    seller_id = bill_data.seller.seller_edo_id
-    buyer_id = bill_data.buyer.buyer_edo_id
+    seller_id = bill_data.seller.edo_id
+    buyer_id = bill_data.buyer.edo_id
 
     has_kiz = any(item.kiz_list for item in bill_data.items)
     upd_date = bill_data.upd_date.strftime("%Y%m%d")

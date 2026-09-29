@@ -79,7 +79,7 @@ class Seller(BaseModel):
     okpo: Optional[str] = Field(None, description="ОКПО")
     prefix: Optional[str] = Field(None, description="Префикс в счёт")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
-    seller_edo_id: str = Field(..., description="ЭДО Ид")
+    edo_id: str = Field(..., description="ЭДО Ид")
     # Дополнительные реквизиты, если нужны
     short_name: Optional[str] = Field(None, description="Сокращенное наименование")
     opf_code: Optional[str] = Field(None, description="Код ОПФ")
@@ -127,7 +127,7 @@ class Buyer(BaseModel):
     kpp: str = Field(..., description="КПП")
     ogrn: str = Field(..., description="ОГРН")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
-    buyer_edo_id: str = Field(..., description="ЭДО Ид")
+    edo_id: str = Field(..., description="ЭДО Ид")
 
 
 class BillItem(BaseModel):
@@ -146,6 +146,12 @@ class BillItem(BaseModel):
     article: Optional[int] = Field(None, description="КодСодержания")
     kiz_list: List[str] = Field(default_factory=list, description="КИЗ (список)")
     # Для прослеживаемости и др. можно добавить, но для примера достаточно.
+
+
+class PaymentDoc(BaseModel):
+    """Платёжно-расчётный документ (СвПРД)."""
+    prd_number: str = Field(..., description="Номер ПРД")
+    prd_date: date = Field(..., description="Дата ПРД")
 
 
 class BillData(BaseModel):
@@ -174,8 +180,15 @@ class BillData(BaseModel):
     payment_doc_number: str = Field(None, description="Номер платёжного документа")
     payment_doc_date: date = Field(None, description="Дата платёжного документа")
     tax: Tax
-    signer: Signer
+    signer: Optional[Signer] = None                       # оставить для совместимости
+    signers: List[Signer] = Field(default_factory=list)   # новый список подписантов
     items: List[BillItem] = Field(default_factory=list)
+    payment_docs: List[PaymentDoc] = Field(default_factory=list)
+    state_contract_number: Optional[str] = None           # для ДопСвФХЖ1/@ИдГосКон
+    # Реквизиты документа об отгрузке (ДокПодтвОтгрНом)
+    dok_podtverzh_name: Optional[str] = None
+    dok_podtverzh_number: Optional[str] = None
+    dok_podtverzh_date: Optional[date] = None
     # Основание (документ-основание для отгрузки)
     basis_doc_name: Optional[str] = Field(None, description="Наименование документа-основания")
     basis_doc_number: Optional[str] = Field(None, description="Номер документа-основания")
