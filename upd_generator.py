@@ -59,13 +59,15 @@ class UpdGenerator:
         """Добавляет <Адрес> с <АдрРФ> или <АдрГАР> в зависимости от типа."""
         if isinstance(address, AddressRF):
             addr = etree.SubElement(parent, "Адрес")
-            attrs = {
+
+            attrs: Dict[str, str] = {
                 "КодРегион": address.region_code,
                 "НаимРегион": address.region_name,
             }
-            # Опциональные атрибуты — только при наличии корректных данных
+            # Индекс — строго 6 символов
             if address.postal_code and len(address.postal_code) == 6:
                 attrs["Индекс"] = address.postal_code
+            # Остальные — только если непустые
             if address.district:
                 attrs["Район"] = address.district
             if address.city:
@@ -80,8 +82,9 @@ class UpdGenerator:
                 attrs["Корпус"] = address.building
             if address.apartment:
                 attrs["Кварт"] = address.apartment
-            if address.extra_info:
-                attrs["ИныеСвед"] = address.extra_info
+            # if address.extra_info:
+            #    attrs["ИныеСвед"] = address.extra_info
+
             etree.SubElement(addr, "АдрРФ", **attrs)
 
         elif isinstance(address, AddressGAR):
@@ -239,6 +242,9 @@ class UpdGenerator:
         if data.seller.address:
             self._add_address(sv_prod, data.seller.address)
 
+        gr_ot = etree.SubElement(sv_sch, "ГрузОт")
+        etree.SubElement(gr_ot, "ОнЖе").text = "он же"
+
         # 3.2 Платёжно-расчётные документы (СвПРД)
         #     XSD: порядок — СвПрод, ГрузОт, ГрузПолуч, СвПРД, ДокПодтвОтгрНом, СвПокуп
         for pp in (data.payment_docs or []):
@@ -346,8 +352,8 @@ class UpdGenerator:
             СодОпер=data.operation_content,
             ВидОпер=data.operation_type or "",
             ДатаПер=_fmt_date(data.transfer_date),
-            ДатаНачПер=_fmt_date(data.transfer_start_date),
-            ДатаОконПер=_fmt_date(data.transfer_end_date),
+            # ДатаНачПер=_fmt_date(data.transfer_start_date),
+            # ДатаОконПер=_fmt_date(data.transfer_end_date),
         )
 
         # 5.1 ОснПер

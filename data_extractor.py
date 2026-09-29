@@ -137,7 +137,21 @@ FACT_HOUSING_NAME = (
 )
 DOC_NAME_OPERATOR = "Универсальный передаточный документ"
 
-"""
+# Лимиты XSD для АдрРФ
+_XSD_LIMITS_RF = {
+    "postal_code": 6,      # length=6
+    "region_name": 51,
+    "district": 255,
+    "city": 255,
+    "locality": 255,
+    "street": 255,
+    "house": 50,
+    "building": 50,
+    "apartment": 50,
+    "extra_info": 1000,
+}
+
+""" Наши ID для ЭДО Лайт
 Автоматика: 2LT-11001972830
 АРКОМ: 2LT-11004384984
 ОСЗ: 2LT-11004334116
@@ -216,6 +230,52 @@ def _parse_attorney(raw: str) -> Tuple[Optional[str], Optional[date]]:
     # Убираем типовые префиксы/разделители
     s = s.strip(" ,;№#")
     return (s or None), doc_date
+
+
+def _truncate(value: Optional[str], limit: int) -> Optional[str]:
+    """Обрезает строку до limit, возвращает None для пустых значений."""
+    if value is None:
+        return None
+    s = str(value).strip()
+    if not s:
+        return None
+    if len(s) > limit:
+        logger.warning("Значение %r обрезано до %d символов", s, limit)
+        s = s[:limit]
+    return s
+
+
+def _compose_extra_info(row: Dict[str, Any]) -> Optional[str]:
+    """
+    Собирает ИныеСвед из полей gran_address, которым нет места
+    среди прямых XSD-атрибутов АдрРФ.
+    Итоговая строка ≤ 1000 символов.
+    """
+    parts: List[str] = []
+
+    # Муниципальный район (если не попал в district)
+    if row.get("area_with_type"):
+        parts.append(f"Мун. район: {row['area_with_type']}")
+    elif row.get("area"):
+        parts.append(f"Мун. район: {row['area']}")
+
+    if row.get("stead"):
+        parts.append(f"Участок: {row['stead']}")
+    if row.get("room"):
+        parts.append(f"Комната: {row['room']}")
+    if row.get("postal_box"):
+        parts.append(f"а/я {row['postal_box']}")
+
+    # Типы (полные наименования)
+    for key in ("house_type_full", "block_type_full",
+                "flat_type_full", "room_type_full", "stead_type_full"):
+        if row.get(key):
+            parts.append(str(row[key]))
+
+    if not parts:
+        return None
+    info = "; ".join(parts)
+    return _truncate(info, _XSD_LIMITS_RF["extra_info"])
 
 # ======================================================================
 # Курсор и менеджер подключений
@@ -468,13 +528,39 @@ class DataExtractor:
     # Адрес из ext.gran_address
     # ------------------------------------------------------------------
     def _get_address_from_gran_address(self, ogrn: str) -> Optional[AddressRF]:
-        """Возвращает AddressRF из ext.gran_address по ОГРН или None."""
+        """
+        Возвращает AddressRF из ext.gran_address по ОГРН.
+        Использует все применимые поля таблицы: прямые XSD-атрибуты
+        заполняются из соответствующих колонок, остальные — в ИныеСвед.
+        """
         if not ogrn:
             return None
+
         row = self.pg.fetch_one(
             """
-            SELECT postal_code, region, region_kladr_id, city_district,
-                   city, settlement, street, house, block, flat, ogrn
+            SELECT
+                -- для XSD-атрибутов
+                postal_code,
+                region,
+                region_kladr_id,
+                city_district,
+                area,
+                city,
+                settlement,
+                street,
+                house,
+                block,
+                flat,
+                -- для ИныеСвед
+                area_with_type,
+                room,
+                stead,
+                postal_box,
+                house_type_full,
+                block_type_full,
+                flat_type_full,
+                room_type_full,
+                stead_type_full
             FROM ext.gran_address
             WHERE ogrn = %s
             """,
@@ -484,21 +570,45 @@ class DataExtractor:
             logger.warning("Адрес для ОГРН '%s' не найден в gran_address", ogrn)
             return None
 
+        # Код региона: первые 2 цифры из region_kladr_id
         region_code = ""
-        if row.get("region_kladr_id") and len(row["region_kladr_id"]) >= 2:
-            region_code = row["region_kladr_id"][:2]
+        rk = (row.get("region_kladr_id") or "").strip()
+        if len(rk) >= 2 and rk[:2].isdigit():
+            region_code = rk[:2]
+        else:
+            logger.warning(
+                "ОГРН %s: не удалось выделить КодРегион из region_kladr_id=%r",
+                ogrn, rk,
+            )
+
+        region_name = row.get("region") or ""
+        if not region_code or not region_name:
+            logger.error(
+                "ОГРН %s: отсутствуют обязательные КодРегион/НаимРегион "
+                "(region_code=%r, region_name=%r)",
+                ogrn, region_code, region_name,
+            )
+            return None
+
+        # Приоритет: city_district (адм. район города), fallback на area
+        district_raw = row.get("city_district") or row.get("area")
 
         return AddressRF(
-            postal_code=row.get("postal_code"),
             region_code=region_code,
-            region_name=row.get("region"),
-            district=row.get("city_district"),
-            city=row.get("city"),
-            locality=row.get("settlement"),
-            street=row.get("street"),
-            house=row.get("house"),
-            building=row.get("block"),
-            apartment=row.get("flat"),
+            region_name=_truncate(region_name, _XSD_LIMITS_RF["region_name"]),
+            postal_code=_truncate(row.get("postal_code"),
+                                  _XSD_LIMITS_RF["postal_code"]) if (
+                                      row.get("postal_code")
+                                      and len(str(row["postal_code"]).strip()) == 6
+            ) else None,
+            district=_truncate(district_raw, _XSD_LIMITS_RF["district"]),
+            city=_truncate(row.get("city"), _XSD_LIMITS_RF["city"]),
+            locality=_truncate(row.get("settlement"), _XSD_LIMITS_RF["locality"]),
+            street=_truncate(row.get("street"), _XSD_LIMITS_RF["street"]),
+            house=_truncate(row.get("house"), _XSD_LIMITS_RF["house"]),
+            building=_truncate(row.get("block"), _XSD_LIMITS_RF["building"]),
+            apartment=_truncate(row.get("flat"), _XSD_LIMITS_RF["apartment"]),
+            extra_info=_compose_extra_info(row),
         )
 
     # ------------------------------------------------------------------
@@ -787,7 +897,8 @@ class DataExtractor:
             basis_doc_name = "Основной договор"
 
         parent_bill = document.get("parent_bill") or bill_no
-        prefix = document.get("prefix") or ""
+        # prefix = document.get("prefix") or ""
+        prefix = seller_j.get("prefix_invoice") or ""
         parent_bill_str = str(parent_bill)
         if len(parent_bill_str) >= 8:
             basis_doc_number = f"{prefix}{parent_bill_str[:4]}-{parent_bill_str[4:]}"

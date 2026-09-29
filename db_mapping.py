@@ -13,20 +13,25 @@ from pydantic import BaseModel, Field
 
 
 class AddressRF(BaseModel):
-    """Адрес в формате АдрРФ (для РФ)."""
-    postal_code: Optional[str] = Field(None, description="Почтовый индекс")
-    region_code: str = Field(..., description="Код субъекта РФ (2 цифры)")
-    region_name: str = Field(..., description="Наименование субъекта РФ")
-    district: Optional[str] = Field(None, description="Район")
-    city: Optional[str] = Field(None, description="Город")
-    locality: Optional[str] = Field(None, description="Населенный пункт")
-    street: Optional[str] = Field(None, description="Улица")
-    house: Optional[str] = Field(None, description="Дом")
-    building: Optional[str] = Field(None, description="Корпус")
-    apartment: Optional[str] = Field(None, description="Квартира/помещение")
-    extra_info: Optional[str] = Field(None, description="Иные сведения об адресе")
+    """
+    Адрес в формате АдрРФ (XSD, элемент <АдрРФ>).
+    Опциональные поля заполняются только при наличии данных
+    и с учётом ограничений XSD (facets length/maxLength).
+    """
+    # --- Обязательные (XSD: use="required") ---
+    region_code: str = Field(..., description="КодРегион (2 цифры)")
+    region_name: str = Field(..., description="НаимРегион (maxLength=51)")
 
-# db_mapping.py - добавить после AddressRF
+    # --- Опциональные (XSD: use="optional") ---
+    postal_code: Optional[str] = Field(None, description="Индекс (length=6)")
+    district: Optional[str] = Field(None, description="Район (maxLength=255)")
+    city: Optional[str] = Field(None, description="Город (maxLength=255)")
+    locality: Optional[str] = Field(None, description="НаселПункт (maxLength=255)")
+    street: Optional[str] = Field(None, description="Улица (maxLength=255)")
+    house: Optional[str] = Field(None, description="Дом (maxLength=50)")
+    building: Optional[str] = Field(None, description="Корпус (maxLength=50)")
+    apartment: Optional[str] = Field(None, description="Кварт (maxLength=50)")
+    extra_info: Optional[str] = Field(None, description="ИныеСвед (maxLength=1000)")
 
 
 class VidNaimKod(BaseModel):
