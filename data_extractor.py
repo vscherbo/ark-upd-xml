@@ -541,13 +541,13 @@ class DataExtractor:
             SELECT
                 -- для XSD-атрибутов
                 postal_code,
-                region,
+                region_with_type,
                 region_kladr_id,
                 city_district,
-                area,
-                city,
-                settlement,
-                street,
+                area_with_type,
+                city_with_type,
+                settlement_with_type,
+                street_with_type,
                 house,
                 block,
                 flat,
@@ -581,7 +581,7 @@ class DataExtractor:
                 ogrn, rk,
             )
 
-        region_name = row.get("region") or ""
+        region_name = row.get("region_with_type") or ""
         if not region_code or not region_name:
             logger.error(
                 "ОГРН %s: отсутствуют обязательные КодРегион/НаимРегион "
@@ -591,7 +591,7 @@ class DataExtractor:
             return None
 
         # Приоритет: city_district (адм. район города), fallback на area
-        district_raw = row.get("city_district") or row.get("area")
+        district_raw = row.get("city_district") or row.get("area_with_type")
 
         return AddressRF(
             region_code=region_code,
@@ -602,9 +602,9 @@ class DataExtractor:
                                       and len(str(row["postal_code"]).strip()) == 6
             ) else None,
             district=_truncate(district_raw, _XSD_LIMITS_RF["district"]),
-            city=_truncate(row.get("city"), _XSD_LIMITS_RF["city"]),
-            locality=_truncate(row.get("settlement"), _XSD_LIMITS_RF["locality"]),
-            street=_truncate(row.get("street"), _XSD_LIMITS_RF["street"]),
+            city=_truncate(row.get("city_with_type"), _XSD_LIMITS_RF["city"]),
+            locality=_truncate(row.get("settlement_with_type"), _XSD_LIMITS_RF["locality"]),
+            street=_truncate(row.get("street_with_type"), _XSD_LIMITS_RF["street"]),
             house=_truncate(row.get("house"), _XSD_LIMITS_RF["house"]),
             building=_truncate(row.get("block"), _XSD_LIMITS_RF["building"]),
             apartment=_truncate(row.get("flat"), _XSD_LIMITS_RF["apartment"]),
