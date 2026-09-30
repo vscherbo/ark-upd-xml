@@ -315,12 +315,28 @@ class UpdGenerator:
                 СтТовУчНал=f"{item.total_with_vat:.2f}",
             )
 
-            # КИЗ — если есть
-            if item.kiz_list:
+            if item.oksm:
+                # sved_dt = etree.SubElement(sved, "СвДТ")
+                # etree.SubElement(sved_dt, "КодПроисх").text = str(item.oksm)
+                # etree.SubElement(sved_dt, "НомерДТ").text = str(item.dt_num)
+                sved_dt = etree.SubElement(sved, "СвДТ",
+                                           КодПроисх=str(item.oksm),
+                                           НомерДТ=str(item.dt_num),
+                                           )
+
+            # ДопСведТов — если есть
+            if item.kiz_list or item.country_origin:
                 dop_tov = etree.SubElement(sved, "ДопСведТов")
-                nom_sred = etree.SubElement(dop_tov, "НомСредИдентТов")
-                for kiz in item.kiz_list:
-                    etree.SubElement(nom_sred, "КИЗ").text = kiz
+
+                # Страна кратко — если есть
+                if item.country_origin:
+                    etree.SubElement(dop_tov, "КрНаимСтрПр").text = item.country_origin
+
+                # КИЗ — если есть
+                if item.kiz_list:
+                    nom_sred = etree.SubElement(dop_tov, "НомСредИдентТов")
+                    for kiz in item.kiz_list:
+                        etree.SubElement(nom_sred, "КИЗ").text = kiz
 
             # Акциз
             akciz = etree.SubElement(sved, "Акциз")

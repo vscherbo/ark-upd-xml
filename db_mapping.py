@@ -149,6 +149,9 @@ class BillItem(BaseModel):
     total_with_vat: float = Field(..., description="Стоимость с НДС")
     # Дополнительные поля (необязательные)
     article: Optional[int] = Field(None, description="КодСодержания")
+    oksm: Optional[int] = Field(..., description="Код страны по ОКСМ")
+    country_origin: Optional[str] = Field(..., description="Краткое название страны")
+    dt_num: Optional[str] = Field(..., description="Номер декларации на товары ДТ (б. ГТД)")
     kiz_list: List[str] = Field(default_factory=list, description="КИЗ (список)")
     # Для прослеживаемости и др. можно добавить, но для примера достаточно.
 

@@ -646,6 +646,7 @@ class DataExtractor:
             """
             SELECT ROW_NUMBER() OVER (ORDER BY bc."ПозицияСчета" ASC) AS row_num,
                    bc."КодСодержания" AS article,
+                   bc."КодПозиции" AS kp,
                    bc."Наименование"   AS item_name,
                    r."Отгружено"       AS quantity,
                    bc."КодОКЕИ"::text  AS mes_code,
@@ -663,6 +664,12 @@ class DataExtractor:
             (bill_no,),
         )
         logger.info("Найдено %d позиций", len(items_raw))
+
+        items_func = self.pg.callproc('rep.get_bill_list_gtd', (bill_no,))
+        if not items_func:
+            raise ValueError(
+                f'Не удалось получить items_func для bill_no={bill_no}')
+        logger.info("Найдено функцией %d позиций", len(items_func))
 
         # ------------------------------------------------------------------
         # 3. Адреса
@@ -819,6 +826,10 @@ class DataExtractor:
         except ValueError:
             vat_rate_num = 0.22
 
+        # Предварительно создаём словарь: kp -> ks_name
+        kp_to_ks_name = {item["kp"]: item
+                         for item in items_func if "kp" in item and "ks_name" in item}
+
         items: List[BillItem] = []
         for row in items_raw:
             price_with_vat = float(row["price_with_vat"]) if row["price_with_vat"] else 0.0
@@ -834,10 +845,18 @@ class DataExtractor:
             if row.get("kiz"):
                 kiz_list = [x for x in row["kiz"].split("^") if x]
 
+            # patch from rep.get_bill_list_gtd
+            # Получаем ks_name, если есть совпадение по kp; иначе оставляем item_name
+            kp_value = row.get("kp")
+            item_func = kp_to_ks_name.get(kp_value)
+            logger.info(f"item_func={item_func}")
+            name = item_func.get("ks_name", row.get("item_name", ""))
+
             items.append(
                 BillItem(
                     row_num=row["row_num"],
-                    name=row["item_name"],
+                    # name=row["item_name"],
+                    name=name,
                     okei_code=str(row.get("mes_code", "796")).zfill(3),
                     okei_name=row.get("mes_unit", "шт") or "шт",
                     quantity=quantity,
@@ -847,6 +866,9 @@ class DataExtractor:
                     vat_amount=round(vat_amount, 2),
                     total_with_vat=round(total_with_vat, 2),
                     article=row.get("article"),
+                    oksm=item_func.get('ОКСМ'),
+                    country_origin=item_func.get('Страна'),
+                    dt_num=item_func.get('gtd'),
                     kiz_list=kiz_list,
                 )
             )
