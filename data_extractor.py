@@ -693,6 +693,16 @@ class DataExtractor:
                 )
                 if self.get_address(buyer_j["ogrn"]) == 0:
                     buyer_address = self._get_address_from_gran_address(buyer_j["ogrn"])
+        # elif buyer_j.get("inn"):
+        #     logger.debug(
+        #         "У покупателя нет ОГРН, запрашиваем адрес в DaData по (ИНН %s)",
+        #         buyer_j["inn"],
+        #     )
+        #     if self.get_address(buyer_j["inn"]) == 0:
+        #         buyer_address = self._get_address_from_gran_address(buyer_j["ogrn??? inn"])
+        if not buyer_address:
+            raise ValueError(
+                f'Не удалось получить buyer_address (ОГРН %s)')
 
         # ------------------------------------------------------------------
         # 4. Продавец
@@ -746,6 +756,7 @@ class DataExtractor:
 
             buyer = Buyer(
                 name=buyer_j.get("legal_name", "") or "",
+                legal_full_name=buyer_j.get("legal_full_name", "") or "",
                 # inn=buyer_j.get("inn", "") or "",
                 # kpp=buyer_j.get("kpp", "") or "",
                 inn=buyer_inn,

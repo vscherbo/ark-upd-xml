@@ -128,6 +128,7 @@ class Signer(BaseModel):
 class Buyer(BaseModel):
     """Покупатель (и грузополучатель, если совпадает)."""
     name: str = Field(..., description="Полное наименование")
+    legal_full_name: str = Field(..., description="Полное наименование")
     inn: str = Field(..., description="ИНН")
     kpp: str = Field(..., description="КПП")
     ogrn: str = Field(..., description="ОГРН")
