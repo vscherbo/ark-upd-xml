@@ -134,6 +134,9 @@ class Buyer(BaseModel):
     ogrn: str = Field(..., description="ОГРН")
     address: Union[AddressRF, AddressGAR] = Field(..., description="Адрес")
     edo_id: str = Field(..., description="ЭДО Ид")
+    surname: Optional[str] = Field(None, description="Фамилия")
+    firstname: Optional[str] = Field(None, description="Имя")
+    secondname: Optional[str] = Field(None, description="Отчество")
 
 
 class BillItem(BaseModel):

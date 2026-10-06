@@ -245,13 +245,36 @@ class UpdGenerator:
         gr_ot = etree.SubElement(sv_sch, "ГрузОт")
         etree.SubElement(gr_ot, "ОнЖе").text = "он же"
 
+        gr_pol = etree.SubElement(sv_sch, "ГрузПолуч")
+        id_gr_pol = etree.SubElement(gr_pol, "ИдСв")
+        if len(data.buyer.inn) == 10:
+            etree.SubElement(
+                id_gr_pol, "СвЮЛУч",
+                НаимОрг=data.buyer.name,
+                ИННЮЛ=data.buyer.inn,
+                КПП=data.buyer.kpp,
+            )
+            if data.buyer.address:
+                self._add_address(gr_pol, data.buyer.address)
+        elif len(data.buyer.inn) == 12:
+            id_sv_ip = etree.SubElement(
+                id_gr_pol, "СвИП",
+                ИННФЛ=data.buyer.inn,
+            )
+            etree.SubElement(
+                id_sv_ip, "ФИО",
+                Фамилия=data.buyer.surname,
+                Имя=data.buyer.firstname,
+                Отчество=data.buyer.secondname,
+            )
+
         # 3.2 Платёжно-расчётные документы (СвПРД)
         #     XSD: порядок — СвПрод, ГрузОт, ГрузПолуч, СвПРД, ДокПодтвОтгрНом, СвПокуп
         for pp in (data.payment_docs or []):
             etree.SubElement(
                 sv_sch, "СвПРД",
-                НомерПРД=pp.number,
-                ДатаПРД=_fmt_date(pp.date),
+                НомерПРД=pp.prd_number,
+                ДатаПРД=_fmt_date(pp.prd_date),
             )
 
         # 3.3 Документ-подтверждение отгрузки (ДокПодтвОтгрНом)
@@ -280,35 +303,16 @@ class UpdGenerator:
             )
             if data.buyer.address:
                 self._add_address(sv_pok, data.buyer.address)
-        if len(data.buyer.inn) == 12:
-            prefix = "Индивидуальный предприниматель "
-            surname = ""
-            firstname = ""
-            secondname = ""
-            if data.buyer.legal_full_name and data.buyer.legal_full_name.startswith(prefix):
-                # Удаляем префикс (если он есть в начале строки)
-                if data.buyer.legal_full_name.startswith(prefix):
-                    name_part = data.buyer.legal_full_name[len(prefix):]
-                else:
-                    name_part = data.buyer.legal_full_name  # на случай, если префикса вдруг нет
-
-                # Разбиваем оставшуюся часть на части по пробелу
-                parts = name_part.strip().split()
-
-                # Предполагаем формат: Фамилия Имя Отчество
-                surname = parts[0] if len(parts) > 0 else ""
-                firstname = parts[1] if len(parts) > 1 else ""
-                secondname = parts[2] if len(parts) > 2 else ""
-
+        elif len(data.buyer.inn) == 12:
             id_sv_ip = etree.SubElement(
                 id_sv_pok, "СвИП",
                 ИННФЛ=data.buyer.inn,
             )
             etree.SubElement(
                 id_sv_ip, "ФИО",
-                Фамилия=surname,
-                Имя=firstname,
-                Отчество=secondname,
+                Фамилия=data.buyer.surname,
+                Имя=data.buyer.firstname,
+                Отчество=data.buyer.secondname,
             )
 
         # 3.5 ДенИзм

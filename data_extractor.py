@@ -754,16 +754,38 @@ class DataExtractor:
                 raise ValueError(
                     f'Не удалось получить buyer_edo_id для ИНН={buyer.inn}, КПП={buyer.kpp}')
 
+            surname = ""
+            firstname = ""
+            secondname = ""
+            legal_full_name = buyer_j.get("legal_full_name", "")
+            if len(buyer_inn) == 12:
+                prefix = "Индивидуальный предприниматель "
+                if legal_full_name:
+                    # Удаляем префикс (если он есть в начале строки)
+                    if legal_full_name.startswith(prefix):
+                        name_part = legal_full_name[len(prefix):]
+                    else:
+                        name_part = legal_full_name  # на случай, если префикса вдруг нет
+
+                    # Разбиваем оставшуюся часть на части по пробелу
+                    parts = name_part.strip().split()
+
+                    # Предполагаем формат: Фамилия Имя Отчество
+                    surname = parts[0] if len(parts) > 0 else ""
+                    firstname = parts[1] if len(parts) > 1 else ""
+                    secondname = parts[2] if len(parts) > 2 else ""
+
             buyer = Buyer(
-                name=buyer_j.get("legal_name", "") or "",
-                legal_full_name=buyer_j.get("legal_full_name", "") or "",
-                # inn=buyer_j.get("inn", "") or "",
-                # kpp=buyer_j.get("kpp", "") or "",
+                name=buyer_j.get("legal_name", ""),
+                legal_full_name=buyer_j.get("legal_full_name", ""),
                 inn=buyer_inn,
                 kpp=buyer_kpp,
-                ogrn=buyer_j.get("ogrn", "") or "",
+                ogrn=buyer_j.get("ogrn", ""),
                 address=buyer_address,
-                edo_id=buyer_edo_id[0]['edo_id']
+                edo_id=buyer_edo_id[0]['edo_id'],
+                surname=surname,
+                firstname=firstname,
+                secondname=secondname,
             )
 
         # ------------------------------------------------------------------
@@ -890,9 +912,11 @@ class DataExtractor:
         payment_docs: List[PaymentDoc] = []
         for pp in contracts.get("bill_pp_list") or []:
             num = pp.get("prd_number")
+            logger.debug("ПРД номер=%s", num
+                         )
             d = _parse_date(pp.get("prd_date"))
             if num and d:
-                payment_docs.append(PaymentDoc(number=str(num), date=d))
+                payment_docs.append(PaymentDoc(prd_number=str(num), prd_date=d))
 
         # ------------------------------------------------------------------
         # 11. Даты и номера для шапки/передачи
