@@ -31,10 +31,13 @@ from requests.exceptions import RequestException
 
 logger = logging.getLogger(__name__)
 
+LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)-20s()] \
+            %(levelname)-7s | %(asctime)-15s | %(message)s'
 
 # --------------------------------------------------------------------------- #
 # Исключения
 # --------------------------------------------------------------------------- #
+
 
 class AstralDocsError(Exception):
     """Базовое исключение модуля."""
@@ -620,6 +623,12 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
         help="Уровень логирования (по умолчанию INFO).",
     )
+    parser.add_argument(
+        "--log-file",
+        default=None,
+        type=str,
+        help="Файл для записи логов. Если не указан — логи выводятся в stdout.",
+    )
     return parser
 
 
@@ -655,12 +664,37 @@ def _load_settings() -> Dict[str, str]:
     }
 
 
+def _configure_logging(level_name: str, log_file: Optional[str]) -> None:
+    """Настроить логирование: в файл, если указан, иначе в stdout."""
+    level = getattr(logging, level_name)
+
+    if log_file:
+        handler: logging.Handler = logging.FileHandler(
+            log_file, mode="a", encoding="utf-8"
+        )
+    else:
+        handler = logging.StreamHandler(stream=sys.stdout)
+
+    handler.setLevel(level)
+    handler.setFormatter(
+        # logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        logging.Formatter(LOG_FORMAT)
+    )
+
+    root = logging.getLogger()
+    # Сбрасываем ранее установленные обработчики (на случай повторных вызовов).
+    for existing in list(root.handlers):
+        root.removeHandler(existing)
+
+    root.addHandler(handler)
+    root.setLevel(level)
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = _build_arg_parser()
     args = parser.parse_args(argv)
 
-    LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)-20s()] \
-            %(levelname)-7s | %(asctime)-15s | %(message)s'
+    _configure_logging(args.log_level, args.log_file)
 
     logging.basicConfig(
         level=getattr(logging, args.log_level),
@@ -684,7 +718,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         ids = client.get_counterparty_global_ids(inn=args.inn, kpp=args.kpp)
         logger.info("Получены ИдЭДО для ИНН=%s КПП=%s: %s", args.inn, args.kpp, ids)
-        return 0
+        # return 0
+        return '^'.join(ids)
     except AstralDocsError as exc:
         logger.error("Ошибка при получении ИдЭДО: %s", exc)
         return 1
