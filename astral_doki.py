@@ -718,8 +718,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     try:
         ids = client.get_counterparty_global_ids(inn=args.inn, kpp=args.kpp)
         logger.info("Получены ИдЭДО для ИНН=%s КПП=%s: %s", args.inn, args.kpp, ids)
-        # return 0
-        return '^'.join(ids)
+        print('^'.join(ids), file=sys.stdout, end='', flush=True)
+        return 0
     except AstralDocsError as exc:
         logger.error("Ошибка при получении ИдЭДО: %s", exc)
         return 1
