@@ -16,6 +16,37 @@ from db_mapping import AddressGAR, AddressRF, BillData, Signer
 logger = logging.getLogger(__name__)
 
 
+class UpdGenerationError(Exception):
+    """
+    Ошибка формирования XML УПД.
+    Поднимается при нарушении бизнес-правил или провале XSD-валидации.
+    Сообщение уже содержит всю нужную диагностику — traceback не нужен.
+    """
+
+
+_MAX_SNIPPET = 200
+
+
+def _format_xsd_error(err) -> str:
+    """Одна строка отчёта об ошибке XSD."""
+    loc_parts = []
+    if err.line:
+        loc_parts.append(f"строка {err.line}")
+    if err.column:
+        loc_parts.append(f"поз. {err.column}")
+    loc = ", ".join(loc_parts) or "без позиции"
+    return f"[{loc}] {err.message}"
+
+
+def _set_opt(attrs: dict, key: str, value) -> None:
+    """Кладёт атрибут в словарь только если значение непустое."""
+    if value is None:
+        return
+    s = str(value).strip()
+    if s:
+        attrs[key] = s
+
+
 def _fmt_date(d) -> str:
     """Форматирует date в ДД.ММ.ГГГГ или возвращает пустую строку."""
     return d.strftime("%d.%m.%Y") if d else ""
@@ -60,7 +91,7 @@ class UpdGenerator:
         if isinstance(address, AddressRF):
             addr = etree.SubElement(parent, "Адрес")
 
-            attrs: Dict[str, str] = {
+            attrs: dict[str, str] = {
                 "КодРегион": address.region_code,
                 "НаимРегион": address.region_name,
             }
@@ -175,6 +206,12 @@ class UpdGenerator:
         attrs = {"СпосПодтПолном": auth_method}
         if signer.position:
             attrs["Должн"] = signer.position
+        else:
+            logger.warning(
+                "У подписанта '%s %s' пустая должность — "
+                "проверьте таблицу 'Подписи'",
+                signer.last_name, signer.first_name,
+            )
 
         podp = etree.SubElement(parent, "Подписант", **attrs)
         _add_fio(podp, signer)
@@ -199,6 +236,23 @@ class UpdGenerator:
     # Основная генерация
     # ------------------------------------------------------------------
     def generate(self, data: BillData) -> str:
+        try:
+            xml_str = self._build_xml(data)
+        except UpdGenerationError:
+            raise
+        except Exception as exc:
+            logger.exception(
+                "Неожиданная ошибка при сборке XML УПД (счёт=%s, upd=%s)",
+                data.bill_number, data.upd_number,
+            )
+            raise UpdGenerationError(
+                f"Ошибка сборки XML УПД: {type(exc).__name__}: {exc}"
+            ) from exc
+
+        self._validate(xml_str)
+        return xml_str
+
+    def _build_xml(self, data: BillData) -> str:
         """
         Генерирует XML-строку УПД на основе данных.
         Возвращает валидный XML как строку (windows-1251).
@@ -212,6 +266,19 @@ class UpdGenerator:
         )
 
         # 2. Документ
+        # 2. Документ — ПоФактХЖ и НаимДокОпр опциональны, minLength=1
+        doc_attrs = {
+            "КНД": "1115131",
+            "Функция": data.function,
+            "ДатаИнфПр": _fmt_date(data.upd_date),
+            "ВремИнфПр": datetime.now().strftime("%H.%M.%S"),
+        }
+        _set_opt(doc_attrs, "ПоФактХЖ", data.fact_housing_name)
+        _set_opt(doc_attrs, "НаимДокОпр", data.doc_name_operator)
+        _set_opt(doc_attrs, "НаимЭконСубСост",
+                 f"{data.seller.name}, ИНН: {data.seller.inn}" if data.seller.name else None)
+        doc = etree.SubElement(root, "Документ", **doc_attrs)
+        """
         doc = etree.SubElement(
             root, "Документ",
             КНД="1115131",
@@ -222,6 +289,7 @@ class UpdGenerator:
             ВремИнфПр=datetime.now().strftime("%H.%M.%S"),
             НаимЭконСубСост=f"{data.seller.name}, ИНН: {data.seller.inn}",
         )
+        """
 
         # 3. СвСчФакт
         sv_sch = etree.SubElement(
@@ -398,6 +466,13 @@ class UpdGenerator:
 
         # 5. СвПродПер
         sv_prod_per = etree.SubElement(doc, "СвПродПер")
+        sv_per_attrs = {
+            "СодОпер": data.operation_content,
+            "ДатаПер": _fmt_date(data.transfer_date),
+        }
+        _set_opt(sv_per_attrs, "ВидОпер", data.operation_type)
+        sv_per = etree.SubElement(sv_prod_per, "СвПер", **sv_per_attrs)
+        """
         sv_per = etree.SubElement(
             sv_prod_per, "СвПер",
             СодОпер=data.operation_content,
@@ -406,6 +481,7 @@ class UpdGenerator:
             # ДатаНачПер=_fmt_date(data.transfer_start_date),
             # ДатаОконПер=_fmt_date(data.transfer_end_date),
         )
+        """
 
         # 5.1 ОснПер
         if data.basis_doc_name:
@@ -416,16 +492,27 @@ class UpdGenerator:
                 РеквДатаДок=_fmt_date(data.basis_doc_date),
             )
 
-        # 5.2 СвЛицПер — используем первого подписанта (директора)
+        # 5.2 СвЛицПер — только если у первого подписанта есть должность
         signers = data.signers or ([data.signer] if data.signer else [])
         if signers:
             first = signers[0]
-            sv_lits = etree.SubElement(sv_per, "СвЛицПер")
-            rab_org = etree.SubElement(
-                sv_lits, "РабОргПрод",
-                Должность=first.position or "",
-            )
-            _add_fio(rab_org, first)
+            if first.position:
+                sv_lits = etree.SubElement(sv_per, "СвЛицПер")
+                rab_org = etree.SubElement(
+                    sv_lits, "РабОргПрод",
+                    Должность=first.position,   # уже непустое
+                )
+                _add_fio(rab_org, first)
+            else:
+                logger.warning(
+                    "СвЛицПер пропущен для счёта %s (УПД %s): "
+                    "у подписанта '%s %s %s' не задана должность",
+                    data.bill_number,
+                    data.upd_number,
+                    first.last_name,
+                    first.first_name,
+                    first.middle_name or "",
+                )
 
         # 5.3 Транспортировка
         if data.transport_info or data.incoterms:
@@ -450,40 +537,61 @@ class UpdGenerator:
         ).decode("windows-1251")
 
         # 8. Валидация
-        self._validate(xml_str)
+        # self._validate(xml_str)
         return xml_str
 
     # ------------------------------------------------------------------
     # Валидация
     # ------------------------------------------------------------------
     def _validate(self, xml_str: str) -> None:
-        """Проверяет XML на соответствие XSD. При ошибке — сохраняет XML."""
+        """
+        Проверяет XML по XSD. При ошибке:
+          • сохраняет XML в validation_err.txt (UTF-8) для отладки;
+          • логирует структурированный список проблем;
+          • поднимает UpdGenerationError с кратким итогом.
+        """
         try:
             parser = etree.XMLParser()
             root = etree.fromstring(xml_str.encode("windows-1251"), parser)
             self.xsd_schema.assertValid(root)
-        except etree.DocumentInvalid as e:
-            logger.error("Ошибка валидации XSD:")
+
+        except etree.DocumentInvalid as exc:
             error_file = "validation_err.txt"
             with open(error_file, "w", encoding="utf-8") as f:
                 f.write(xml_str)
-            logger.error("XML сохранён в %s", error_file)
 
             lines = xml_str.splitlines()
-            for error in e.error_log:
+            problems = []
+            for err in exc.error_log:
                 line_text = ""
-                if error.line and 0 < error.line <= len(lines):
-                    line_text = lines[error.line - 1].strip()
-                logger.error(
-                    "  %s (line %s, column %s) %s",
-                    error.message, error.line, error.column, line_text,
-                )
-            raise
-        except Exception as e:
-            logger.exception("Ошибка при валидации: %s", e)
-            raise
+                if err.line and 0 < err.line <= len(lines):
+                    snippet = lines[err.line - 1].strip()
+                    if len(snippet) > _MAX_SNIPPET:
+                        snippet = snippet[:_MAX_SNIPPET - 3] + "..."
+                    line_text = snippet
+                problems.append((_format_xsd_error(err), line_text))
+
+            summary_lines = [
+                f"XML не прошёл XSD-валидацию: {len(problems)} ошибок(и). "
+                f"Полный XML — в {error_file}."
+            ]
+            for i, (msg, snippet) in enumerate(problems, 1):
+                summary_lines.append(f"  {i}. {msg}")
+                if snippet:
+                    summary_lines.append(f"     фрагмент: {snippet}")
+
+            summary = "\n".join(summary_lines)
+            logger.error(summary)
+            raise UpdGenerationError(summary) from exc
+
+        except Exception as exc:
+            logger.exception("Непредвиденная ошибка при валидации XML")
+            raise UpdGenerationError(
+                f"Непредвиденная ошибка при XSD-валидации: {exc}"
+            ) from exc
 
     # ------------------------------------------------------------------
+
     def generate_and_save(self, data: BillData, output_path: Union[str, Path]) -> str:
         """
         Генерирует XML и сохраняет в файл.

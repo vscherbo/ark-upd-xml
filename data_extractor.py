@@ -37,11 +37,13 @@ import psycopg2.pool
 from psycopg2 import sql
 from psycopg2.extras import LoggingConnection, LoggingCursor
 
+import errors
 import save_address
 import suggest_party
 from db_mapping import (AddressGAR, AddressRF, Bank, BillData, BillItem, Buyer,
                         NomerTip, PaymentDoc, Seller, Signer, Tax, TipNaim,
                         VidNaim, VidNaimKod)
+from errors import build_model
 
 REGIONS_RU = {
     "01": "Республика Адыгея",
@@ -485,13 +487,35 @@ class DataExtractor:
         self.edo_prefix = edo_prefix
         self.pg = PGManager() if not use_json else None
 
-    # ------------------------------------------------------------------
-    # Публичный API
-    # ------------------------------------------------------------------
-    def get_bill_data(self, bill_no: int) -> BillData:
-        if self.use_json:
-            return self._load_from_json(bill_no, "HARD-1234")
-        return self._load_from_db(bill_no)
+    def _fetch_edo_id(self, kind: str, inn: str, kpp: str) -> Optional[str]:
+        """
+        Возвращает edo_id контрагента или None, если записи нет.
+
+        Args:
+            kind: "продавец" / "покупатель" — для лога.
+            inn, kpp: реквизиты контрагента.
+        """
+        rows = self.pg.callproc(
+            "arc_energo.edo_id", (self.edo_prefix, inn, kpp)
+        )
+        if not rows:
+            logger.warning(
+                "%s: функция arc_energo.edo_id не вернула строк "
+                "(prefix=%s, ИНН=%s, КПП=%s)",
+                kind, self.edo_prefix, inn, kpp,
+            )
+            return None
+
+        edo_id = rows[0].get("edo_id")
+        if not edo_id:
+            logger.warning(
+                "%s: edo_id не найден (prefix=%s, ИНН=%s, КПП=%s)",
+                kind, self.edo_prefix, inn, kpp,
+            )
+            return None
+
+        logger.debug("%s: edo_id=%s", kind, edo_id)
+        return edo_id
 
     @staticmethod
     def _extract_ogrn_from_dadata_response(response: Any) -> Optional[str]:
@@ -516,6 +540,14 @@ class DataExtractor:
         if ogrn:
             return str(ogrn).strip()
         return None
+
+    # ------------------------------------------------------------------
+    # Публичный API
+    # ------------------------------------------------------------------
+    def get_bill_data(self, bill_no: int) -> BillData:
+        if self.use_json:
+            return self._load_from_json(bill_no, "HARD-1234")
+        return self._load_from_db(bill_no)
 
     # ------------------------------------------------------------------
     # Адрес из DaData (для покупателя)
@@ -778,95 +810,108 @@ class DataExtractor:
         # ------------------------------------------------------------------
         # 4. Продавец
         # ------------------------------------------------------------------
-        seller_inn = seller_j.get("inn", "") or ""
-        seller_kpp = seller_j.get("kpp", "") or ""
-        seller_edo_id = self.pg.callproc('arc_energo.edo_id', (self.edo_prefix, seller_inn,
-                                                               seller_kpp,))
+        seller_inn = (seller_j.get("inn") or "").strip()
+        seller_kpp = (seller_j.get("kpp") or "").strip()
+
+        if not seller_inn or not seller_kpp:
+            raise ValueError(
+                f"Невозможно сформировать УПД: у продавца отсутствуют обязательные "
+                f"реквизиты для поиска edo_id (ИНН={seller_inn!r}, КПП={seller_kpp!r})"
+            )
+
+        seller_edo_id = self._fetch_edo_id("Продавец", seller_inn, seller_kpp)
         if not seller_edo_id:
             raise ValueError(
-                f'Не удалось получить seller_edo_id для ИНН={seller_inn}, КПП={seller_kpp}')
+                f"Невозможно сформировать УПД: не определён edo_id продавца "
+                f"(prefix={self.edo_prefix!r}, ИНН={seller_inn}, КПП={seller_kpp}). "
+                f"Проверьте справочник ЭДО."
+            )
 
-        seller = Seller(
+        seller = build_model(
+            Seller,
+            context=f"продавец ИНН={seller_inn} КПП={seller_kpp}",
             name=seller_j.get("legal_name", "") or "",
-            # inn=seller_j.get("inn", "") or "",
-            # kpp=seller_j.get("kpp", "") or "",
             inn=seller_inn,
             kpp=seller_kpp,
             ogrn=seller_j.get("ogrn"),
             okpo=seller_j.get("okpo"),
             prefix=document.get("prefix"),
             address=seller_address,
-            edo_id=seller_edo_id[0]['edo_id']
+            edo_id=seller_edo_id,
         )
 
         # ------------------------------------------------------------------
         # 5. Покупатель
         # ------------------------------------------------------------------
         is_worker = bool(buyer_j.get("is_worker"))
+        buyer_inn = (buyer_j.get("inn") or "").strip()
+        buyer_kpp = (buyer_j.get("kpp") or "").strip()
+
         if is_worker:
-            # TODO: реализовать ветку СвФЛУч для покупателя-физлица
+            # TODO: реализовать ветку СвФЛУч для покупателя-физлица.
+            #       Для физлица edo_id по (ИНН, КПП) не запрашивается — там другая логика.
             logger.warning(
                 "Покупатель — физлицо (worker_fio=%s). Ветка СвФЛУч пока не реализована.",
                 buyer_j.get("worker_fio"),
             )
-            buyer = Buyer(
-                name=buyer_j.get("worker_fio", "") or "",
-                inn="",
-                kpp="",
-                ogrn="",
-                address=buyer_address,
+            raise ValueError(
+                "Невозможно сформировать УПД: покупатель — физлицо (is_worker=true), "
+                "ветка СвФЛУч не реализована"
             )
-        else:
-            buyer_inn = buyer_j.get("inn", "") or ""
-            buyer_kpp = buyer_j.get("kpp", "") or ""
-            buyer_edo_id = self.pg.callproc('arc_energo.edo_id', (self.edo_prefix, buyer_inn,
-                                                                  buyer_kpp,))
-            if not buyer_edo_id:
-                raise ValueError(
-                    f'Не удалось получить buyer_edo_id для ИНН={buyer_inn}, КПП={buyer_kpp}')
 
-            surname = ""
-            firstname = ""
-            secondname = ""
-            legal_full_name = buyer_j.get("legal_full_name", "")
-            if len(buyer_inn) == 12:
-                prefix = "Индивидуальный предприниматель "
-                if legal_full_name:
-                    # Удаляем префикс (если он есть в начале строки)
-                    if legal_full_name.startswith(prefix):
-                        name_part = legal_full_name[len(prefix):]
-                    else:
-                        name_part = legal_full_name  # на случай, если префикса вдруг нет
-
-                    # Разбиваем оставшуюся часть на части по пробелу
-                    parts = name_part.strip().split()
-
-                    # Предполагаем формат: Фамилия Имя Отчество
-                    surname = parts[0] if len(parts) > 0 else ""
-                    firstname = parts[1] if len(parts) > 1 else ""
-                    secondname = parts[2] if len(parts) > 2 else ""
-
-            buyer = Buyer(
-                name=buyer_j.get("legal_name", ""),
-                legal_full_name=buyer_j.get("legal_full_name", ""),
-                inn=buyer_inn,
-                kpp=buyer_kpp,
-                ogrn=buyer_resolved_ogrn or "",  # buyer_j.get("ogrn", ""),
-                address=buyer_address,
-                edo_id=buyer_edo_id[0]['edo_id'],
-                surname=surname,
-                firstname=firstname,
-                secondname=secondname,
+        if not buyer_inn:
+            raise ValueError(
+                "Невозможно сформировать УПД: у покупателя отсутствует ИНН, "
+                "невозможно определить edo_id"
             )
+
+        buyer_edo_id = self._fetch_edo_id("Покупатель", buyer_inn, buyer_kpp)
+        if not buyer_edo_id:
+            raise ValueError(
+                f"Невозможно сформировать УПД: не определён edo_id покупателя "
+                f"(prefix={self.edo_prefix!r}, ИНН={buyer_inn}, КПП={buyer_kpp!r}). "
+                f"Проверьте справочник ЭДО."
+            )
+
+        # Разбор ФИО для ИП
+        surname = ""
+        firstname = ""
+        secondname = ""
+        if len(buyer_inn) == 12:
+            legal_full_name = buyer_j.get("legal_full_name", "") or ""
+            prefix_ip = "Индивидуальный предприниматель "
+            name_part = legal_full_name[len(prefix_ip):] if legal_full_name.startswith(
+                prefix_ip) else legal_full_name
+            parts = name_part.strip().split()
+            surname = parts[0] if len(parts) > 0 else ""
+            firstname = parts[1] if len(parts) > 1 else ""
+            secondname = parts[2] if len(parts) > 2 else ""
+
+        buyer = build_model(
+            Buyer,
+            context=f"покупатель ИНН={buyer_inn} КПП={buyer_kpp}",
+            name=buyer_j.get("legal_name", "") or "",
+            legal_full_name=buyer_j.get("legal_full_name", "") or "",
+            inn=buyer_inn,
+            kpp=buyer_kpp,
+            ogrn=buyer_resolved_ogrn or "",
+            address=buyer_address,
+            edo_id=buyer_edo_id,
+            surname=surname,
+            firstname=firstname,
+            secondname=secondname,
+        )
 
         # ------------------------------------------------------------------
         # 6. Банк продавца
         # ------------------------------------------------------------------
-        bank = Bank(
+        bank = build_model(
+            Bank,
+            context=f"банк продавца ИНН={seller_inn}",
             bank_name=seller_j.get("bank", "") or "",
             bik=seller_j.get("bik", "") or "",
             account=seller_j.get("rs", "") or "",
-            corr_account=None,  # в JSON нет к/с продавца
+            corr_account=None,
         )
 
         # ------------------------------------------------------------------
@@ -874,7 +919,11 @@ class DataExtractor:
         # ------------------------------------------------------------------
         vat_rate_raw = document.get("vat_rate")
         vat_rate_str = f"{vat_rate_raw}%" if vat_rate_raw is not None else "22%"
-        tax = Tax(vat_rate=vat_rate_str)
+
+        tax = build_model(
+            Tax, context=f"ставка НДС счёта {bill_no}",
+            vat_rate=vat_rate_str,
+        )
 
         # ------------------------------------------------------------------
         # 8. Подписанты (директор + бухгалтер, если есть)
@@ -957,6 +1006,28 @@ class DataExtractor:
             name = item_func.get("ks_name", row.get("item_name", ""))
 
             items.append(
+                build_model(
+                    BillItem,
+                    context=f"строка {row['row_num']} счёта {bill_no}",
+                    row_num=row["row_num"],
+                    name=name,
+                    okei_code=str(row.get("mes_code", "796")).zfill(3),
+                    okei_name=row.get("mes_unit", "шт") or "шт",
+                    quantity=quantity,
+                    price_without_vat=round(price_without_vat, 2),
+                    total_without_vat=round(total_without_vat, 2),
+                    vat_rate=vat_rate_str,
+                    vat_amount=round(vat_amount, 2),
+                    total_with_vat=round(total_with_vat, 2),
+                    article=row.get("article"),
+                    oksm=item_func.get('ОКСМ'),
+                    country_origin=item_func.get('Страна'),
+                    dt_num=item_func.get('gtd'),
+                    kiz_list=kiz_list,
+                )
+            )
+            """
+            items.append(
                 BillItem(
                     row_num=row["row_num"],
                     # name=row["item_name"],
@@ -976,6 +1047,7 @@ class DataExtractor:
                     kiz_list=kiz_list,
                 )
             )
+            """
 
         # ------------------------------------------------------------------
         # 10. Платёжно-расчётные документы (СвПРД)
@@ -1049,7 +1121,9 @@ class DataExtractor:
         # ------------------------------------------------------------------
         # 15. BillData
         # ------------------------------------------------------------------
-        bill_data = BillData(
+        bill_data = build_model(
+            BillData,
+            context=f"счёт {bill_no}",
             bill_number=str(bill_no),
             bill_date=bill_date,
             upd_number=sv_sch_number,

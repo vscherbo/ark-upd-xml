@@ -10,7 +10,7 @@ from pathlib import Path
 
 from data_extractor import DataExtractor
 from filename_generator import FilenameGenerator
-from upd_generator import UpdGenerator
+from upd_generator import UpdGenerationError, UpdGenerator
 
 LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)-20s()] \
             %(levelname)-7s | %(asctime)-15s | %(message)s'
@@ -87,10 +87,12 @@ def main():
     )
     try:
         bill_data = extractor.get_bill_data(args.bill_number)
-    except Exception as e:
-        # logger.error("Ошибка извлечения данных: %s", e)
-        logger.exception("Ошибка извлечения данных")
+    except ValueError as exc:
+        logger.error("Ошибка данных: %s", exc)
         sys.exit(1)
+    except Exception as e:
+        logger.exception("Непредвиденная ошибка извлечения данных")
+        sys.exit(2)
 
     logger.info("Данные извлечены, количество позиций в счёте: %s", len(bill_data.items))
 
@@ -116,10 +118,14 @@ def main():
     try:
         generator.generate_and_save(bill_data, output_path)
         logger.info("УПД успешно сгенерирован: %s", output_path)
-    except Exception as e:
-        # logger.error("Ошибка генерации УПД: %s", e)
-        logger.exception("Ошибка генерации УПД")
+    except UpdGenerationError as exc:
+        # Сообщение уже содержит всё нужное (перечень проблем XSD,
+        # путь к validation_err.txt и т.п.) — traceback не нужен.
+        logger.error("Не удалось сформировать УПД:\n%s", exc)
         sys.exit(1)
+    except Exception:
+        logger.exception("Непредвиденная ошибка при генерации УПД")
+        sys.exit(2)
 
 
 if __name__ == "__main__":
