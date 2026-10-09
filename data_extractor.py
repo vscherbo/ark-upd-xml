@@ -493,36 +493,86 @@ class DataExtractor:
             return self._load_from_json(bill_no, "HARD-1234")
         return self._load_from_db(bill_no)
 
+    @staticmethod
+    def _extract_ogrn_from_dadata_response(response: Any) -> Optional[str]:
+        """
+        Извлекает ОГРН из ответа DaData suggest/party.
+
+        Формат ответа:
+            {"suggestions": [{"data": {"ogrn": "1201200001573", ...}, ...}]}
+        """
+        if not response:
+            return None
+        if isinstance(response, dict):
+            suggestions = response.get("suggestions") or []
+        elif isinstance(response, list):
+            suggestions = response
+        else:
+            return None
+        if not suggestions:
+            return None
+        data = suggestions[0].get("data") or {}
+        ogrn = data.get("ogrn")
+        if ogrn:
+            return str(ogrn).strip()
+        return None
+
     # ------------------------------------------------------------------
     # Адрес из DaData (для покупателя)
     # ------------------------------------------------------------------
-    def get_address(self, query: str) -> int:
+
+    def fetch_address_from_dadata(self, query: str) -> Optional[str]:
+        """
+        Запрашивает организацию в DaData по ОГРН или ИНН, сохраняет
+        результат в ext.gran_address.
+
+        Args:
+            query: ОГРН (10 или 15 цифр) либо ИНН (10 или 12 цифр).
+
+        Returns:
+            ОГРН из ответа DaData (для последующей выборки из gran_address)
+            либо None в случае любой ошибки.
+        """
         try:
             api_key = suggest_party.load_api_key()
         except (FileNotFoundError, KeyError) as exc:
             logger.error("Не удалось загрузить API-ключ DaData: %s", exc)
-            return 1
+            return None
 
         try:
             response = suggest_party.suggest(query, "party", api_key)
         except Exception as exc:
-            logger.exception("Ошибка запроса DaData: %s", exc)
-            return 1
+            logger.exception("Ошибка запроса DaData по %r: %s", query, exc)
+            return None
+
+        ogrn = self._extract_ogrn_from_dadata_response(response)
+        if not ogrn:
+            logger.error(
+                "В ответе DaData не найден ОГРН для запроса %r. "
+                "response.suggestions[0].data=%r",
+                query,
+                (response.get("suggestions") or [{}])[0].get("data")
+                if isinstance(response, dict) else None,
+            )
+            return None
 
         try:
             db_config = save_address.DBConfig.from_ini()
         except Exception as exc:
             logger.exception("Не удалось загрузить конфигурацию БД: %s", exc)
-            return 1
+            return None
 
         try:
             inserted = save_address.save_response(response, db_config)
         except Exception as exc:
-            logger.exception("Ошибка сохранения в БД: %s", exc)
-            return 1
+            logger.exception("Ошибка сохранения ответа DaData в БД: %s", exc)
+            return None
 
-        logger.info("Адрес из DaData сохранён, записей: %d", inserted)
-        return 0
+        logger.info(
+            "DaData: сохранено %d записей, ОГРН=%s (запрос %r)",
+            inserted, ogrn, query,
+        )
+        return ogrn
 
     # ------------------------------------------------------------------
     # Адрес из ext.gran_address
@@ -675,35 +725,55 @@ class DataExtractor:
         # ------------------------------------------------------------------
         # 3. Адреса
         # ------------------------------------------------------------------
+        # 3.1 Продавец — только по ОГРН
         seller_address: Optional[AddressRF] = None
-        if seller_j.get("ogrn"):
-            seller_address = self._get_address_from_gran_address(seller_j["ogrn"])
+        seller_ogrn = (seller_j.get("ogrn") or "").strip()
+        if seller_ogrn:
+            seller_address = self._get_address_from_gran_address(seller_ogrn)
             if not seller_address:
                 logger.warning(
-                    "Адрес продавца (ОГРН %s) не найден в gran_address",
-                    seller_j["ogrn"],
+                    "Адрес продавца (ОГРН %s) не найден в gran_address", seller_ogrn,
                 )
 
+        # 3.2 Покупатель — по ОГРН, а если его нет — по ИНН через DaData
         buyer_address: Optional[AddressRF] = None
-        if buyer_j.get("ogrn"):
-            buyer_address = self._get_address_from_gran_address(buyer_j["ogrn"])
+        buyer_ogrn = (buyer_j.get("ogrn") or "").strip()
+        buyer_inn_for_addr = (buyer_j.get("inn") or "").strip()
+        buyer_resolved_ogrn = buyer_ogrn
+
+        if buyer_ogrn:
+            # Есть ОГРН — стандартный путь
+            buyer_address = self._get_address_from_gran_address(buyer_ogrn)
             if not buyer_address:
                 logger.debug(
-                    "Адрес покупателя (ОГРН %s) не найден, запрашиваем DaData",
-                    buyer_j["ogrn"],
+                    "Адрес покупателя (ОГРН %s) не найден в gran_address, "
+                    "запрашиваем DaData", buyer_ogrn,
                 )
-                if self.get_address(buyer_j["ogrn"]) == 0:
-                    buyer_address = self._get_address_from_gran_address(buyer_j["ogrn"])
-        # elif buyer_j.get("inn"):
-        #     logger.debug(
-        #         "У покупателя нет ОГРН, запрашиваем адрес в DaData по (ИНН %s)",
-        #         buyer_j["inn"],
-        #     )
-        #     if self.get_address(buyer_j["inn"]) == 0:
-        #         buyer_address = self._get_address_from_gran_address(buyer_j["ogrn??? inn"])
+                ogrn_from_dadata = self.fetch_address_from_dadata(buyer_ogrn)
+                if ogrn_from_dadata:
+                    buyer_address = self._get_address_from_gran_address(ogrn_from_dadata)
+        elif buyer_inn_for_addr:
+            # ОГРН отсутствует — используем ИНН, но ОГРН вернётся из ответа DaData
+            logger.debug(
+                "У покупателя нет ОГРН, запрашиваем DaData по ИНН=%s",
+                buyer_inn_for_addr,
+            )
+            ogrn_from_dadata = self.fetch_address_from_dadata(buyer_inn_for_addr)
+            if ogrn_from_dadata:
+                buyer_address = self._get_address_from_gran_address(ogrn_from_dadata)
+                buyer_resolved_ogrn = ogrn_from_dadata
+            if not buyer_address:
+                logger.error(
+                    "Не удалось получить адрес покупателя по ИНН=%s "
+                    "(ОГРН из DaData=%r)",
+                    buyer_inn_for_addr, ogrn_from_dadata,
+                )
+
         if not buyer_address:
             raise ValueError(
-                f'Не удалось получить buyer_address (ОГРН %s)')
+                "Не удалось получить адрес покупателя "
+                f"(ОГРН={buyer_ogrn or 'нет'}, ИНН={buyer_inn_for_addr or 'нет'})"
+            )
 
         # ------------------------------------------------------------------
         # 4. Продавец
@@ -714,7 +784,7 @@ class DataExtractor:
                                                                seller_kpp,))
         if not seller_edo_id:
             raise ValueError(
-                f'Не удалось получить seller_edo_id для ИНН={seller.inn}, КПП={seller.kpp}')
+                f'Не удалось получить seller_edo_id для ИНН={seller_inn}, КПП={seller_kpp}')
 
         seller = Seller(
             name=seller_j.get("legal_name", "") or "",
@@ -753,7 +823,7 @@ class DataExtractor:
                                                                   buyer_kpp,))
             if not buyer_edo_id:
                 raise ValueError(
-                    f'Не удалось получить buyer_edo_id для ИНН={buyer.inn}, КПП={buyer.kpp}')
+                    f'Не удалось получить buyer_edo_id для ИНН={buyer_inn}, КПП={buyer_kpp}')
 
             surname = ""
             firstname = ""
@@ -781,7 +851,7 @@ class DataExtractor:
                 legal_full_name=buyer_j.get("legal_full_name", ""),
                 inn=buyer_inn,
                 kpp=buyer_kpp,
-                ogrn=buyer_j.get("ogrn", ""),
+                ogrn=buyer_resolved_ogrn or "",  # buyer_j.get("ogrn", ""),
                 address=buyer_address,
                 edo_id=buyer_edo_id[0]['edo_id'],
                 surname=surname,
