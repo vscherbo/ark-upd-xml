@@ -178,6 +178,8 @@ def main():
         logger.exception("Непредвиденная ошибка при генерации УПД")
         sys.exit(2)
 
+    print(filename)  # IMPORTANT, used in PG
+
 
 if __name__ == "__main__":
     main()
