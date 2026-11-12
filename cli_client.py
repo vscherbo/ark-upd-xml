@@ -177,8 +177,33 @@ def main():
     except Exception:
         logger.exception("Непредвиденная ошибка при генерации УПД")
         sys.exit(2)
+    else:
+        _scp(output_path)
+        print(filename)  # IMPORTANT, used in PG
 
-    print(filename)  # IMPORTANT, used in PG
+
+def _scp(arg_file):
+    """Doing scp"""
+    ret = False
+    home_dir = os.path.expanduser("~")
+    logging.info("home_dir=%s", home_dir)
+    ssh = paramiko.SSHClient()
+    ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+    ssh.load_system_host_keys()
+
+    try:
+        ssh.connect('cifs-public.arc.world', username='uploader')
+        with SCPClient(ssh.get_transport()) as scp:
+            scp.put(arg_file, '/mnt/r10/ds_cifs/public/от ИТ/Честный_знак/ЭДО/01-new')
+        ssh.close()
+        logging.info("Файл %s успешно скопирован в целевую папку", arg_file)
+        ret = True
+    except (paramiko.AuthenticationException, paramiko.SSHException) as e:
+        logging.error("SSH error: %s", e)
+    except Exception as err:  # pylint: disable=broad-exception-caught
+        logging.error("_scp failed: %s", err)
+
+    return ret
 
 
 if __name__ == "__main__":
