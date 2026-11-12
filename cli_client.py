@@ -66,7 +66,7 @@ def main():
         help="Каталог для сохранения XML-файлов",
     )
     parser.add_argument(
-        "--edo_prefix",
+        "--edo-prefix",
         type=str,
         default="2LT",
         help="для какой системы ЭДО",
