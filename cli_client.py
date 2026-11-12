@@ -6,6 +6,7 @@ cli_client.py - CLI-инструмент для генерации УПД.
 
 import argparse
 import logging
+import os
 import sys
 from pathlib import Path
 
