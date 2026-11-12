@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+# -*- coding: utf-8 -*-
 """
 cli_client.py - CLI-инструмент для генерации УПД.
 """
@@ -12,12 +13,48 @@ from data_extractor import DataExtractor
 from filename_generator import FilenameGenerator
 from upd_generator import UpdGenerationError, UpdGenerator
 
-LOG_FORMAT = '[%(filename)-22s:%(lineno)4s - %(funcName)-20s()] \
-            %(levelname)-7s | %(asctime)-15s | %(message)s'
+LOG_FORMAT = (
+    '[%(filename)-22s:%(lineno)4s - %(funcName)-20s()] '
+    '%(levelname)-7s | %(asctime)-15s | %(message)s'
+)
 
-# logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
-logging.basicConfig(level=logging.DEBUG, format=LOG_FORMAT)
 logger = logging.getLogger(__name__)
+
+
+def setup_logging(level_name: str, log_file: str | None) -> None:
+    """
+    Настраивает корневой логгер.
+
+    Args:
+        level_name: имя уровня ('DEBUG' | 'INFO' | 'WARNING' | 'ERROR').
+        log_file: путь к файлу лога или None — тогда вывод в stdout.
+    """
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    formatter = logging.Formatter(LOG_FORMAT)
+
+    root = logging.getLogger()
+    root.setLevel(level)
+    # Сброс ранее установленных хендлеров (на случай повторного вызова)
+    for handler in root.handlers[:]:
+        root.removeHandler(handler)
+
+    if log_file:
+        log_path = Path(log_file)
+        try:
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            handler = logging.FileHandler(log_path, encoding="utf-8")
+        except OSError as exc:
+            # Не можем открыть файл — падаем, но не молча
+            sys.stderr.write(
+                f"Не удалось открыть файл лога {log_path!r}: {exc}\n"
+            )
+            sys.exit(2)
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+    else:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
 
 
 def main():
@@ -30,12 +67,6 @@ def main():
         required=True,
         help="Номер счёта (из базы данных)",
     )
-    # parser.add_argument(
-    #     "--upd-number",
-    #     type=str,
-    #     required=True,
-    #     help="Номер УПД (присваиваемый при генерации)",
-    # )
     parser.add_argument(
         "--address-format",
         choices=["rf", "gar"],
@@ -71,8 +102,29 @@ def main():
         default="2LT",
         help="для какой системы ЭДО",
     )
+    parser.add_argument(
+        "--log-level",
+        choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        default="INFO",
+        help="Уровень логирования (по умолчанию: INFO)",
+    )
+    parser.add_argument(
+        "--log-file",
+        type=str,
+        default=None,
+        help="Путь к файлу лога. Если не задан — вывод в stdout",
+    )
 
     args = parser.parse_args()
+
+    # Логирование настраивается после парсинга аргументов
+    setup_logging(args.log_level, args.log_file)
+    logger.debug(
+        "Аргументы CLI: bill=%s, address-format=%s, edo-prefix=%s, "
+        "log-level=%s, log-file=%s",
+        args.bill_number, args.address_format, args.edo_prefix,
+        args.log_level, args.log_file,
+    )
 
     # Создаём каталог для вывода
     output_dir = Path(args.output_dir)
@@ -90,16 +142,15 @@ def main():
     except ValueError as exc:
         logger.error("Ошибка данных: %s", exc)
         sys.exit(1)
-    except Exception as e:
+    except Exception:
         logger.exception("Непредвиденная ошибка извлечения данных")
         sys.exit(2)
 
-    logger.info("Данные извлечены, количество позиций в счёте: %s", len(bill_data.items))
+    logger.info(
+        "Данные извлечены, количество позиций в счёте: %s",
+        len(bill_data.items),
+    )
 
-    # seller_id = bill_data.seller.inn          # выбор ЭДО Ид
-    # buyer_id = bill_data.buyer.inn
-    # seller_id = '2LT-600072763'
-    # buyer_id = '2LT-600070554'
     seller_id = bill_data.seller.edo_id
     buyer_id = bill_data.buyer.edo_id
 
@@ -107,7 +158,7 @@ def main():
     upd_date = bill_data.upd_date.strftime("%Y%m%d")
 
     id_file = FilenameGenerator.generate(seller_id, buyer_id, upd_date, has_kiz)
-    logger.debug('id_file=%s', id_file)
+    logger.debug("id_file=%s", id_file)
     bill_data.upd_file = id_file
 
     filename = id_file + ".xml"
