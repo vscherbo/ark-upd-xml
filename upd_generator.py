@@ -390,12 +390,21 @@ class UpdGenerator:
             НаимОКВ="Российский рубль",
         )
 
-        # 3.6 ДопСвФХЖ1 — только при наличии ИдГосКон
-        if data.state_contract_number:
-            etree.SubElement(
-                sv_sch, "ДопСвФХЖ1",
-                ИдГосКон=data.state_contract_number,
-            )
+        # 3.6 ДопСвФХЖ1 — если есть ИдГосКон и/или авансовые СФ (строка 5б)
+        if data.state_contract_number or data.sopr_docs:
+            dop_attrs = {}
+            _set_opt(dop_attrs, "ИдГосКон", data.state_contract_number)
+            dop = etree.SubElement(sv_sch, "ДопСвФХЖ1", **dop_attrs)
+
+            # Строка 5б — реквизиты авансовых счетов-фактур
+            for doc in data.sopr_docs:
+                sopr_attrs = {
+                    "РеквНаимДок": doc.name,
+                    "РеквНомерДок": doc.number,
+                    "РеквДатаДок": _fmt_date(doc.doc_date),
+                }
+                _set_opt(sopr_attrs, "РеквДопСведДок", doc.extra_info)
+                etree.SubElement(dop, "СопрДокФХЖ", **sopr_attrs)
 
         # 4. ТаблСчФакт
         tabl = etree.SubElement(doc, "ТаблСчФакт")

@@ -1062,6 +1062,29 @@ class DataExtractor:
                 payment_docs.append(PaymentDoc(prd_number=str(num), prd_date=d))
 
         # ------------------------------------------------------------------
+        # 10.1 Авансовые счёта-фактуры (строка 5б → СопрДокФХЖ)
+        # ------------------------------------------------------------------
+        sopr_docs: List[SoprDoc] = []
+        for av in contracts.get("avans_list") or []:
+            num = av.get("num")
+            d = _parse_date(av.get("date"))
+            if not num or not d:
+                logger.warning("avans_list: пропущена запись без номера/даты: %r", av)
+                continue
+
+            # Если в будущем появится информация об исправлении — сюда
+            extra_info = None
+            # if av.get("is_correction"):
+            #     extra_info = f"ИспАСЧФ №{av['correction_num']} от {av['correction_date']}"
+
+            sopr_docs.append(
+                SoprDoc(name="АСЧФ", number=str(num), doc_date=d, extra_info=extra_info)
+            )
+
+        if sopr_docs:
+            logger.info("Авансовых счетов-фактур (строка 5б): %d", len(sopr_docs))
+
+        # ------------------------------------------------------------------
         # 11. Даты и номера для шапки/передачи
         # ------------------------------------------------------------------
         bill_date = _parse_date(document.get("bill_date"))
@@ -1153,6 +1176,7 @@ class DataExtractor:
             dok_podtverzh_name=dok_podtverzh_name,
             dok_podtverzh_number=dok_podtverzh_number,
             dok_podtverzh_date=dok_podtverzh_date,
+            sopr_docs=sopr_docs,
         )
         return bill_data
 

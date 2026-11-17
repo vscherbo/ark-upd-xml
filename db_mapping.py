@@ -166,6 +166,14 @@ class PaymentDoc(BaseModel):
     prd_date: date = Field(..., description="Дата ПРД")
 
 
+class SoprDoc(BaseModel):
+    """Сведения о сопроводительном документе (СопрДокФХЖ)."""
+    name: str = Field("АСЧФ", description="РеквНаимДок")
+    number: str = Field(..., description="РеквНомерДок")
+    doc_date: date = Field(..., description="РеквДатаДок")
+    extra_info: Optional[str] = Field(None, description="РеквДопСведДок")
+
+
 class BillData(BaseModel):
     """Полный набор данных для генерации УПД."""
     bill_number: str = Field(..., description="Номер счета (основания)")
@@ -215,6 +223,10 @@ class BillData(BaseModel):
     transport_info: Optional[str] = Field(None, description="Сведения о транспортировке")
     incoterms: Optional[str] = Field(None, description="Инкотермс (3 буквы)")
     incoterms_version: Optional[str] = Field(None, description="Версия Инкотермс (4 цифры)")
+    sopr_docs: List[SoprDoc] = Field(
+        default_factory=list,
+        description="Сопроводительные документы (строка 5б — авансовые СФ)",
+    )
     # Дополнительные информационные поля (ИнфПолФХЖ1,2,3) – можно добавить при необходимости
 
     class Config:
