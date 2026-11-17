@@ -10,6 +10,8 @@ import os
 import sys
 from pathlib import Path
 
+import paramiko
+
 from data_extractor import DataExtractor
 from filename_generator import FilenameGenerator
 from upd_generator import UpdGenerationError, UpdGenerator
