@@ -39,8 +39,8 @@ import errors
 import save_address
 import suggest_party
 from db_mapping import (AddressGAR, AddressRF, Bank, BillData, BillItem, Buyer,
-                        NomerTip, PaymentDoc, Seller, Signer, Tax, TipNaim,
-                        VidNaim, VidNaimKod)
+                        MchdData, NomerTip, PaymentDoc, Seller, Signer, Tax,
+                        TipNaim, VidNaim, VidNaimKod)
 from errors import build_model
 
 REGIONS_RU = {
@@ -485,7 +485,9 @@ class DataExtractor:
         self.json_path = json_path
         self.address_format = address_format
         self.edo_prefix = edo_prefix
-        self.pg = PGManager() if not use_json else None
+        self.pg = PGManager(
+            dsn='postgresql://arc_energo@vm-pg.arc.world/arc_energo') if not use_json else None
+        # postgresql://user:pass@host/db
 
     def _fetch_edo_id(self, kind: str, inn: str, kpp: str) -> Optional[str]:
         """
@@ -926,50 +928,102 @@ class DataExtractor:
         )
 
         # ------------------------------------------------------------------
-        # 8. Подписанты (директор + бухгалтер, если есть)
+        # 8. Подписанты
         # ------------------------------------------------------------------
         signers: List[Signer] = []
 
-        # 8.1 Директор
+        # 8.1 Директор или сотрудник с МЧД
         last, first, middle = _parse_fio(signatures.get("director") or "")
-        director_signer = Signer(
-            last_name=last or "—",     # XSD требует minLength=1
-            first_name=first or "—",
-            middle_name=middle or None,
-            position=signatures.get("position") or None,
-            auth_method="1",
-        )
-        attorney_dir = signatures.get("attorney_director")
-        if attorney_dir:
-            doc_num, doc_date = _parse_attorney(attorney_dir)
-            # TODO: уточнить, всегда ли бумажная доверенность (auth_method="5"),
-            #       или возможна МЧД (auth_method="3" + СвДоверЭл).
-            director_signer.auth_method = "5"
-            director_signer.paper_doc_number = doc_num
-            director_signer.paper_doc_date = doc_date
-        signers.append(director_signer)
+        mchd_raw = signatures.get("mchd")
 
-        # 8.2 Бухгалтер (если ФИО непустое)
-        accountant_fio = (signatures.get("accountant") or "").strip()
-        if accountant_fio:
-            a_last, a_first, a_middle = _parse_fio(accountant_fio)
-            accountant_signer = Signer(
-                last_name=a_last or "—",
-                first_name=a_first or "—",
-                middle_name=a_middle or None,
-                # TODO: уточнить должность бухгалтера (в bill_doc_details_j её нет)
-                # position="Главный бухгалтер",
-                # Пока, как для "директора"
+        if mchd_raw is not None:
+            # --- Ветка МЧД (auth_method=3, tip_podpis=3) ---
+            if not (last and first):
+                raise ValueError(
+                    "Невозможно сформировать УПД: у подписанта задана МЧД "
+                    f"(uuid={mchd_raw.get('number')!r}), но в arc_energo.\"Подписи\""
+                    ".«ЗаДиректора» не заполнено ФИО"
+                )
+
+            m_number = (mchd_raw.get("number") or "").strip()
+            m_issue_date = _parse_date(mchd_raw.get("issue_date"))
+            m_storage_id = (mchd_raw.get("storage_id") or "").strip()
+
+            missing = []
+            if not m_number:
+                missing.append("НомДовер")
+            if not m_issue_date:
+                missing.append("ДатаВыдДовер")
+            if not m_storage_id:
+                missing.append("ИдСистХран")
+            if missing:
+                raise ValueError(
+                    "Невозможно сформировать УПД: МЧД задана (uuid="
+                    f"{mchd_raw.get('number')!r}), но в arc_energo.\"ПодписиМЧД\" "
+                    f"не заполнены обязательные поля: {', '.join(missing)}. "
+                    "Проверьте запись МЧД."
+                )
+
+            mchd = MchdData(
+                number=m_number,
+                issue_date=m_issue_date,
+                storage_id=m_storage_id,
+                inner_number=(mchd_raw.get("inner_number") or "").strip() or None,
+                inner_reg_date=_parse_date(mchd_raw.get("inner_reg_date")),
+                system_url=(mchd_raw.get("system_url") or "").strip() or None,
+            )
+
+            signers.append(Signer(
+                last_name=last,
+                first_name=first,
+                middle_name=middle or None,
+                position=signatures.get("position") or None,
+                auth_method="3",
+                tip_podpis="3",
+                mchd=mchd,
+            ))
+            logger.info(
+                "Подписант — сотрудник с МЧД (НомДовер=%s)", m_number,
+            )
+        else:
+            # --- Обычная ветка (без доверенности или бумажная) ---
+            director_signer = Signer(
+                last_name=last or "—",
+                first_name=first or "—",
+                middle_name=middle or None,
                 position=signatures.get("position") or None,
                 auth_method="1",
+                tip_podpis="1",
             )
-            attorney_acc = signatures.get("attorney_accountant")
-            if attorney_acc:
-                doc_num, doc_date = _parse_attorney(attorney_acc)
-                accountant_signer.auth_method = "5"
-                accountant_signer.paper_doc_number = doc_num
-                accountant_signer.paper_doc_date = doc_date
-            signers.append(accountant_signer)
+            attorney_dir = signatures.get("attorney_director")
+            if attorney_dir:
+                doc_num, doc_date = _parse_attorney(attorney_dir)
+                director_signer.auth_method = "5"
+                director_signer.paper_doc_number = doc_num
+                director_signer.paper_doc_date = doc_date
+            signers.append(director_signer)
+
+        # 8.2 Бухгалтер — только в обычной ветке (при МЧД второго подписанта нет)
+        if mchd_raw is None:
+            accountant_fio = (signatures.get("accountant") or "").strip()
+            if accountant_fio:
+                a_last, a_first, a_middle = _parse_fio(accountant_fio)
+                accountant_signer = Signer(
+                    last_name=a_last or "—",
+                    first_name=a_first or "—",
+                    middle_name=a_middle or None,
+                    # TODO: уточнить должность бухгалтера — в bill_doc_details_j нет отдельного поля
+                    position=signatures.get("position") or None,
+                    auth_method="1",
+                    tip_podpis="2",
+                )
+                attorney_acc = signatures.get("attorney_accountant")
+                if attorney_acc:
+                    doc_num, doc_date = _parse_attorney(attorney_acc)
+                    accountant_signer.auth_method = "5"
+                    accountant_signer.paper_doc_number = doc_num
+                    accountant_signer.paper_doc_date = doc_date
+                signers.append(accountant_signer)
 
         # ------------------------------------------------------------------
         # 9. Позиции счёта
