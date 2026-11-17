@@ -84,6 +84,15 @@ DECLARE
     v_dogovor_type          integer;
     v_avans                 jsonb;
     v_bill_pp               jsonb;
+
+    -- МЧД
+    v_mchd_uuid           uuid;
+    v_mchd_number         varchar;
+    v_mchd_issue_date     date;
+    v_mchd_inner_number   varchar;
+    v_mchd_inner_reg_date date;
+    v_mchd_storage_id     varchar;
+    v_mchd_system_url     varchar;
 BEGIN
     ----------------------------------------------------------------
     -- 1. Первичный счёт
@@ -226,7 +235,7 @@ BEGIN
     END IF;
 
     ----------------------------------------------------------------
-    -- 7. Подписи
+    -- 7. Подписи (+ МЧД через Подписи.uuid)
     ----------------------------------------------------------------
     IF is_gov_holiday(v_sign_date) THEN
         loc_sign_emp := 226;
@@ -234,44 +243,65 @@ BEGIN
         loc_sign_emp := usr;
     END IF;
 
-    SELECT p.ЗаДиректора, p.ЗаБухгалтера,
-           p.ВидНомерДатаДокументаБух, p.ВидНомерДатаДокументаДир,
-           p.Должность, p.stamp_n_sign
+    SELECT p."ЗаДиректора", p."ЗаБухгалтера",
+           p."ВидНомерДатаДокументаБух", p."ВидНомерДатаДокументаДир",
+           p."Должность", p."stamp_n_sign",
+           p.uuid                                     AS mchd_uuid,
+           m."НомДовер"::text                         AS mchd_number,
+           m."ДатаВыдДовер"                           AS mchd_issue_date,
+           m."ВнНомДовер"                             AS mchd_inner_number,
+           m."ДатаВнРегДовер"                         AS mchd_inner_reg_date,
+           m."ИдСистХран"                             AS mchd_storage_id,
+           m."СведСист"                               AS mchd_system_url
     INTO v_sig_director, v_sig_accountant,
          v_sig_attorney_accountant, v_sig_attorney_director,
-         v_sig_position, v_sig_stamp
-    FROM Подписи p
-    WHERE p.КодОтчета::text = doc
-      AND p.КлючФирмы::text = v_firm
-      AND p.НомерСотрудника = loc_sign_emp
-      AND p.ДатаСтартаПодписи = (
-          SELECT max(ДатаСтартаПодписи) FROM Подписи
-          WHERE КодОтчета::text = doc
-            AND КлючФирмы::text = v_firm
-            AND НомерСотрудника = loc_sign_emp
-            AND ДатаСтартаПодписи <= v_sign_date
+         v_sig_position, v_sig_stamp,
+         v_mchd_uuid,
+         v_mchd_number, v_mchd_issue_date,
+         v_mchd_inner_number, v_mchd_inner_reg_date,
+         v_mchd_storage_id, v_mchd_system_url
+    FROM "Подписи" p
+    LEFT JOIN "ПодписиМЧД" m ON m."НомДовер" = p.uuid
+    WHERE p."КодОтчета"::text = doc
+      AND p."КлючФирмы"::text = v_firm
+      AND p."НомерСотрудника" = loc_sign_emp
+      AND p."ДатаСтартаПодписи" = (
+          SELECT max("ДатаСтартаПодписи")
+          FROM "Подписи"
+          WHERE "КодОтчета"::text = doc
+            AND "КлючФирмы"::text = v_firm
+            AND "НомерСотрудника" = loc_sign_emp
+            AND "ДатаСтартаПодписи" <= v_sign_date
       );
 
     IF NOT FOUND THEN
-        SELECT p.ЗаДиректора, p.ЗаБухгалтера,
-               p.ВидНомерДатаДокументаБух, p.ВидНомерДатаДокументаДир,
-               p.Должность, p.stamp_n_sign
+        SELECT p."ЗаДиректора", p."ЗаБухгалтера",
+               p."ВидНомерДатаДокументаБух", p."ВидНомерДатаДокументаДир",
+               p."Должность", p."stamp_n_sign",
+               p.uuid, m."НомДовер"::text, m."ДатаВыдДовер",
+               m."ВнНомДовер", m."ДатаВнРегДовер",
+               m."ИдСистХран", m."СведСист"
         INTO v_sig_director, v_sig_accountant,
              v_sig_attorney_accountant, v_sig_attorney_director,
-             v_sig_position, v_sig_stamp
-        FROM Подписи p
-        WHERE p.КодОтчета::text = doc
-          AND p.КлючФирмы::text = v_firm
-          AND p.НомерСотрудника = 0
-          AND p.ДатаСтартаПодписи = (
-              SELECT max(ДатаСтартаПодписи) FROM Подписи
-              WHERE КодОтчета::text = doc
-                AND КлючФирмы::text = v_firm
-                AND НомерСотрудника = 0
-                AND ДатаСтартаПодписи <= v_sign_date
+             v_sig_position, v_sig_stamp,
+             v_mchd_uuid,
+             v_mchd_number, v_mchd_issue_date,
+             v_mchd_inner_number, v_mchd_inner_reg_date,
+             v_mchd_storage_id, v_mchd_system_url
+        FROM "Подписи" p
+        LEFT JOIN "ПодписиМЧД" m ON m."НомДовер" = p.uuid
+        WHERE p."КодОтчета"::text = doc
+          AND p."КлючФирмы"::text = v_firm
+          AND p."НомерСотрудника" = 0
+          AND p."ДатаСтартаПодписи" = (
+              SELECT max("ДатаСтартаПодписи")
+              FROM "Подписи"
+              WHERE "КодОтчета"::text = doc
+                AND "КлючФирмы"::text = v_firm
+                AND "НомерСотрудника" = 0
+                AND "ДатаСтартаПодписи" <= v_sign_date
           );
     END IF;
-
     ----------------------------------------------------------------
     -- 8. Договор (сырые номер/дата/тип)
     ----------------------------------------------------------------
@@ -453,7 +483,18 @@ BEGIN
             'attorney_accountant',  v_sig_attorney_accountant,
             'attorney_director',    v_sig_attorney_director,
             'position',             v_sig_position,
-            'stamp',                v_sig_stamp
+            'stamp',                v_sig_stamp,
+            'mchd', CASE
+                WHEN v_mchd_uuid IS NULL THEN NULL
+                ELSE jsonb_build_object(
+                    'number',         v_mchd_number,
+                    'issue_date',     to_char(v_mchd_issue_date,     'YYYY-MM-DD'),
+                    'inner_number',   v_mchd_inner_number,
+                    'inner_reg_date', to_char(v_mchd_inner_reg_date, 'YYYY-MM-DD'),
+                    'storage_id',     v_mchd_storage_id,
+                    'system_url',     v_mchd_system_url
+                )
+            END
         ),
         'contracts', jsonb_build_object(
             'state_contract_number', v_state_contract_number,
