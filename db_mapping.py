@@ -104,25 +104,36 @@ class Tax(BaseModel):
     vat_rate: str = Field(..., description="Ставка НДС (например, '20%', '10/110', 'без НДС')")
 
 
+class MchdData(BaseModel):
+    """Данные машиночитаемой доверенности (СвДоверЭл)."""
+    number: str = Field(..., description="НомДовер (uuid, 36 символов)")
+    issue_date: date = Field(..., description="ДатаВыдДовер")
+    storage_id: str = Field(..., description="ИдСистХран (required по XSD)")
+    inner_number: Optional[str] = Field(None, description="ВнНомДовер")
+    inner_reg_date: Optional[date] = Field(None, description="ДатаВнРегДовер")
+    system_url: Optional[str] = Field(None, description="УРЛСист")
+
+
 class Signer(BaseModel):
     """Подписант УПД."""
     last_name: str = Field(..., description="Фамилия")
     first_name: str = Field(..., description="Имя")
     middle_name: Optional[str] = Field(None, description="Отчество")
     position: Optional[str] = Field(None, description="Должность")
-    # Способ подтверждения полномочий:
-    # 1 — без доверенности, 2 — по доверенности (бумажной), 3 — МЧД и т.д.
-    auth_method: Literal["1", "2", "3", "4", "5", "6"] = Field(
-        "1",
-        description="Способ подтверждения полномочий (код)"
+
+    # 1 — без доверенности, 3 — МЧД, 5 — бумажная доверенность
+    auth_method: Literal["1", "2", "3", "4", "5", "6"] = Field("1")
+
+    # 1 — директор, 2 — бухгалтер, 3 — иное лицо (МЧД)
+    tip_podpis: Optional[Literal["1", "2", "3"]] = Field(
+        None, description="ТипПодпис"
     )
-    # Для доверенности (если auth_method в {3,5}):
-    mchd_number: Optional[str] = Field(None, description="Номер доверенности (МЧД)")
-    mchd_date: Optional[date] = Field(None, description="Дата выдачи доверенности")
-    mchd_issuer_inn: Optional[str] = Field(None, description="ИНН доверителя")
-    # Для бумажной доверенности:
-    paper_doc_number: Optional[str] = Field(None, description="Внутренний номер доверенности")
-    paper_doc_date: Optional[date] = Field(None, description="Дата выдачи бумажной доверенности")
+
+    mchd: Optional[MchdData] = Field(None, description="МЧД (auth_method=3)")
+
+    # Бумажная доверенность (auth_method=5)
+    paper_doc_number: Optional[str] = Field(None, description="ВнНомДовер (бум.)")
+    paper_doc_date: Optional[date] = Field(None, description="ДатаВыдДовер (бум.)")
 
 
 class Buyer(BaseModel):

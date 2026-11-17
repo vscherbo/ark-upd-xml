@@ -181,60 +181,63 @@ class UpdGenerator:
 
     def _add_signer(self, parent: etree.Element, signer: Signer) -> None:
         """
-        Добавляет элемент <Подписант>.
-        Понижает auth_method до "1", если обязательных данных для
-        выбранного способа подтверждения полномочий не хватает.
+        Добавляет <Подписант>. Поддерживает:
+          auth_method=1 — без доверенности;
+          auth_method=3 — МЧД (СвДоверЭл);
+          auth_method=5 — бумажная доверенность (СвДоверБум).
+        При неполных данных — откат на '1' с предупреждением.
         """
         auth_method = signer.auth_method
 
-        # Fallback: СвДоверБум (5) без номера/даты — откат на "1"
-        if auth_method == "5" and not (signer.paper_doc_number and signer.paper_doc_date):
-            logger.warning(
-                "auth_method='5' без paper_doc_number/date, откат на '1'"
-            )
-            auth_method = "1"
+        # МЧД: обязательны number, issue_date, storage_id
+        if auth_method == "3":
+            m = signer.mchd
+            if not (m and m.number and m.issue_date and m.storage_id):
+                logger.warning(
+                    "auth_method='3' без обязательных полей МЧД "
+                    "(number/issue_date/storage_id) — откат на '1'"
+                )
+                auth_method = "1"
 
-        # Fallback: СвДоверЭл (3) без обязательных полей — откат на "1"
-        if auth_method == "3" and not (
-            signer.mchd_number and signer.mchd_date and signer.mchd_issuer_inn
+        # Бумажная: обязательны paper_doc_number, paper_doc_date
+        if auth_method == "5" and not (
+            signer.paper_doc_number and signer.paper_doc_date
         ):
             logger.warning(
-                "auth_method='3' без mchd_number/date/issuer_inn, откат на '1'"
+                "auth_method='5' без paper_doc_number/date — откат на '1'"
             )
             auth_method = "1"
 
-        attrs = {"СпосПодтПолном": auth_method}
-        if signer.position:
-            attrs["Должн"] = signer.position
-        else:
-            logger.warning(
-                "У подписанта '%s %s' пустая должность — "
-                "проверьте таблицу 'Подписи'",
-                signer.last_name, signer.first_name,
-            )
+        attrs: Dict[str, str] = {"СпосПодтПолном": auth_method}
+        _set_opt(attrs, "Должн", signer.position)
+        _set_opt(attrs, "ТипПодпис", signer.tip_podpis)
 
         podp = etree.SubElement(parent, "Подписант", **attrs)
         _add_fio(podp, signer)
 
-        if auth_method == "5":
-            # Бумажная доверенность
+        if auth_method == "3" and signer.mchd:
+            m = signer.mchd
+            doc_attrs: Dict[str, str] = {
+                "НомДовер": m.number,
+                "ДатаВыдДовер": _fmt_date(m.issue_date),
+                "ИдСистХран": m.storage_id,
+            }
+            _set_opt(doc_attrs, "ВнНомДовер", m.inner_number)
+            if m.inner_reg_date:
+                doc_attrs["ДатаВнРегДовер"] = _fmt_date(m.inner_reg_date)
+            _set_opt(doc_attrs, "УРЛСист", m.system_url)
+            etree.SubElement(podp, "СвДоверЭл", **doc_attrs)
+
+        elif auth_method == "5":
             etree.SubElement(
                 podp, "СвДоверБум",
                 ДатаВыдДовер=_fmt_date(signer.paper_doc_date),
                 ВнНомДовер=signer.paper_doc_number or "",
             )
-        elif auth_method == "3":
-            # МЧД / электронная доверенность
-            etree.SubElement(
-                podp, "СвДоверЭл",
-                НомДовер=signer.mchd_number or "",
-                ДатаВыдДовер=_fmt_date(signer.mchd_date),
-                ИдСистХран=signer.mchd_issuer_inn or "",  # TODO: уточнить источник
-            )
-
     # ------------------------------------------------------------------
     # Основная генерация
     # ------------------------------------------------------------------
+
     def generate(self, data: BillData) -> str:
         try:
             xml_str = self._build_xml(data)
